@@ -333,3 +333,36 @@ export const setIssueMilestone = async (
     return response;
 };
 
+export async function fetchCommentHtml(nodeId: string, githubToken: string): Promise<string | null> {
+  try {
+    const response = await fetch('https://api.github.com/graphql', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${githubToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        query: `query { 
+          node(id: "${nodeId}") { 
+            ... on IssueComment { 
+              bodyHTML 
+            } 
+          }
+        }`
+      })
+    });
+    
+    const data = await response.json();
+    return data?.data?.node?.bodyHTML || null;
+  } catch (error) {
+    console.error('Failed to fetch comment HTML:', error);
+    return null;
+  }
+}
+
+export function extractImagesFromHtml(html: string): string[] {
+  const imgRegex = /<img[^>]+src="([^"]+)"[^>]*>/g;
+  const matches = [...html.matchAll(imgRegex)];
+  return matches.map(match => match[1]);
+}
+
