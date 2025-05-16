@@ -362,7 +362,16 @@ export async function fetchCommentHtml(nodeId: string, githubToken: string): Pro
 
 export function extractImagesFromHtml(html: string): string[] {
   const imgRegex = /<img[^>]+src="([^"]+)"[^>]*>/g;
-  const matches = [...html.matchAll(imgRegex)];
-  return matches.map(match => match[1]);
+  const urls: string[] = [];
+  let match: RegExpExecArray | null;
+  
+  // Use exec in a loop instead of matchAll + spread
+  while ((match = imgRegex.exec(html)) !== null) {
+    if (match[1]) {
+      urls.push(match[1]);
+    }
+  }
+  
+  return urls;
 }
 
