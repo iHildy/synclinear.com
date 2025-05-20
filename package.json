@@ -6,7 +6,8 @@
         "build": "npx prisma generate && next build",
         "release": "npx prisma migrate deploy",
         "start": "next start",
-        "lint": "next lint"
+        "lint": "next lint",
+        "create-key": "ts-node create-key.ts"
     },
     "devDependencies": {
         "@next/eslint-plugin-next": "^13.0.6",
@@ -44,7 +45,9 @@
         "react-dom": "^18.2.0",
         "react-select": "^5.7.4",
         "tailwindcss": "^3.3.5",
+        "ts-node": "^10.9.2",
         "uuid": "^9.0.0"
     },
     "packageManager": "pnpm@7.33.3"
 }
+
