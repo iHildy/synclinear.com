@@ -33,7 +33,22 @@ export async function linearWebhookHandler(
     body: LinearWebhookPayload,
     originIp: string
 ) {
+    // Add extensive logging of incoming webhook
+    console.log(`[DEBUG] Linear webhook received:
+        action: ${body.action}
+        type: ${body.type}
+        teamId: ${body.data?.teamId}
+        issueId: ${body.data?.id}
+        issueNumber: ${body.data?.number}
+        teamKey: ${body.data?.team?.key}
+        hasLabels: ${!!body.data?.labelIds}
+        labelCount: ${body.data?.labelIds?.length || 0}
+        updatedFrom: ${JSON.stringify(body.updatedFrom || {})}
+        createdAt: ${new Date().toISOString()}
+    `);
+
     if (!LINEAR.IP_ORIGINS.includes(`${originIp || ""}`)) {
+        console.log(`[ERROR] Invalid Linear webhook origin IP: ${originIp}`);
         throw new Error(
             `Could not verify Linear webhook from ${originIp || ""}`
         );
@@ -47,6 +62,12 @@ export async function linearWebhookHandler(
         type: actionType
     }: LinearWebhookPayload = body;
 
+    // Log specific event details
+    console.log(`[DEBUG] Processing Linear webhook: ${action} ${actionType} for ${data.team?.key}-${data.number}`);
+    
+    // Add logging before syncs lookup
+    console.log(`[DEBUG] Looking for syncs with linearUserId: ${data.userId ?? data.creatorId}`);
+    
     const syncs = await prisma.sync.findMany({
         where: {
             linearUserId: data.userId ?? data.creatorId
@@ -55,6 +76,13 @@ export async function linearWebhookHandler(
             LinearTeam: true,
             GitHubRepo: true
         }
+    });
+
+    console.log(`[DEBUG] Found ${syncs.length} syncs for user`);
+
+    // Add more detailed logging for syncs
+    syncs.forEach((s, i) => {
+        console.log(`[DEBUG] Sync ${i+1}: teamId=${s.linearTeamId}, repoId=${s.githubRepoId}`);
     });
 
     const sync = syncs.find(s => {
@@ -127,6 +155,9 @@ export async function linearWebhookHandler(
         githubAuthHeader
     );
 
+    // Add logging for syncedIssue search
+    console.log(`[DEBUG] Checking for existing synced issue: linearIssueId=${data.id}, linearTeamId=${data.teamId}`);
+    
     const syncedIssue = await prisma.syncedIssue.findFirst({
         where: {
             linearIssueId: data.id,
@@ -134,6 +165,11 @@ export async function linearWebhookHandler(
         },
         include: { GitHubRepo: true }
     });
+    
+    console.log(`[DEBUG] Existing synced issue found: ${!!syncedIssue}`);
+    if (syncedIssue) {
+        console.log(`[DEBUG] Existing issue details: githubIssueNumber=${syncedIssue.githubIssueNumber}, githubIssueId=${syncedIssue.githubIssueId}`);
+    }
 
     if (action === "update") {
         // Label updated on an already-Public issue
@@ -305,31 +341,49 @@ export async function linearWebhookHandler(
                 repoFullName
             );
 
-            await Promise.all([
-                linearQuery(attachmentQuery, linearKey).then(response => {
-                    if (!response?.data?.attachmentCreate?.success) {
-                        console.log(
-                            `Failed to add attachment to ${ticketName} for ${
-                                createdIssueData.id
-                            }: ${response?.error || ""}.`
-                        );
-                    } else {
-                        console.log(
-                            `Created attachment on ${ticketName} for ${createdIssueData.id}.`
-                        );
-                    }
-                }),
-                prisma.syncedIssue.create({
-                    data: {
-                        githubIssueId: createdIssueData.id,
-                        linearIssueId: data.id,
-                        linearTeamId: data.teamId,
-                        githubIssueNumber: createdIssueData.number,
-                        linearIssueNumber: data.number,
-                        githubRepoId: repoId
-                    }
-                })
-            ] as Promise<void>[]);
+            // When creating GitHub issue
+            console.log(`[DEBUG] Creating GitHub issue for Linear issue ${data.team?.key}-${data.number}`);
+            
+            // After GitHub issue creation
+            console.log(`[DEBUG] GitHub issue created with status: ${createdIssueResponse.statusCode}, id: ${createdIssueData.id}, number: ${createdIssueData.number}`);
+            
+            // Before database write
+            console.log(`[DEBUG] About to create syncedIssue record in database`);
+            
+            // When writing to database table
+            try {
+                await Promise.all([
+                    linearQuery(attachmentQuery, linearKey).then(response => {
+                        if (!response?.data?.attachmentCreate?.success) {
+                            console.log(
+                                `[ERROR] Failed to add attachment to ${ticketName} for ${
+                                    createdIssueData.id
+                                }: ${response?.error || ""}.`
+                            );
+                        } else {
+                            console.log(
+                                `[INFO] Created attachment on ${ticketName} for ${createdIssueData.id}.`
+                            );
+                        }
+                    }),
+                    prisma.syncedIssue.create({
+                        data: {
+                            githubIssueId: createdIssueData.id,
+                            linearIssueId: data.id,
+                            linearTeamId: data.teamId,
+                            githubIssueNumber: createdIssueData.number,
+                            linearIssueNumber: data.number,
+                            githubRepoId: repoId
+                        }
+                    }).then(() => {
+                        console.log(`[INFO] Successfully created syncedIssue record in database`);
+                    })
+                ] as Promise<void>[]);
+            } catch (error) {
+                console.log(`[ERROR] Failed to create syncedIssue record: ${error.message}`);
+                console.log(`[ERROR] Stack trace: ${error.stack}`);
+                throw error;
+            }
 
             // Apply all labels to newly-created issue
             const labelIds = data.labelIds.filter(id => id != publicLabelId);
@@ -1156,4 +1210,7 @@ export async function linearWebhookHandler(
             }
         }
     }
+
+    // Add logs for the end of processing
+    console.log(`[DEBUG] Completed processing Linear webhook: ${action} ${actionType} for ${data.team?.key}-${data.number}`);
 }

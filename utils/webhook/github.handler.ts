@@ -29,6 +29,7 @@ import { GENERAL, LINEAR, SHARED } from "../constants";
 import got from "got";
 import { linearQuery } from "../apollo";
 import { ApiError } from "../errors";
+import { fetchCommentHtml, extractImagesFromHtml } from "../github";
 
 export async function githubWebhookHandler(
     body: IssuesEvent | IssueCommentCreatedEvent | MilestoneEvent,
@@ -209,9 +210,44 @@ export async function githubWebhookHandler(
             }
 
             if (!syncedIssue) return skipReason("comment", issue.number);
+            
+            // Add this code to handle private images
+            let processedCommentBody = comment.body;
+            
+            // Check if comment potentially has images
+            if (comment.body.includes('![') || comment.body.includes('<img')) {
+                console.log(`[Image Processing] Detected potential images in comment ${comment.id}`);
+                
+                // Fetch the HTML version of the comment for proper image URLs
+                console.log(`[Image Processing] Fetching HTML content for comment node_id: ${comment.node_id}`);
+                const commentHtml = await fetchCommentHtml(comment.node_id, githubKey);
+                
+                if (commentHtml) {
+                    console.log(`[Image Processing] Received HTML response (length: ${commentHtml.length})`);
+                    console.log(`[Image Processing] HTML snippet: ${commentHtml.substring(0, 200)}...`);
+                    
+                    const imageUrls = extractImagesFromHtml(commentHtml);
+                    console.log(`[Image Processing] Extracted ${imageUrls.length} image URLs from HTML`);
+                    imageUrls.forEach((url, i) => console.log(`[Image Processing] Image ${i+1}: ${url.substring(0, 100)}...`));
+                    
+                    // Replace image references with the authenticated URLs
+                    console.log(`[Image Processing] Original comment body length: ${processedCommentBody.length}`);
+                    
+                    // This is a simple approach; you might need more sophisticated regex matching
+                    let imgIndex = 0;
+                    processedCommentBody = processedCommentBody.replace(
+                        /!\[.*?\]\(.*?\)|<img[^>]*>/g,
+                        () => `![image](${imageUrls[imgIndex++]})`
+                    );
+                    
+                    console.log(`[Image Processing] Modified comment body length: ${processedCommentBody.length}`);
+                } else {
+                    console.log(`[Image Processing] Failed to fetch HTML content for comment ${comment.id}`);
+                }
+            }
 
             const modifiedComment = await prepareMarkdownContent(
-                comment.body,
+                processedCommentBody,
                 "github"
             );
 
