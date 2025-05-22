@@ -18,18 +18,24 @@ import { GetServerSideProps } from "next";
 const BASIC_AUTH_USER = process.env.BASIC_AUTH_USER;
 const BASIC_AUTH_PASS = process.env.BASIC_AUTH_PASS;
 
-export const getServerSideProps: GetServerSideProps = async (context) => {
+export const getServerSideProps: GetServerSideProps = async context => {
     const auth = context.req.headers.authorization;
     if (!auth) {
         context.res.statusCode = 401;
-        context.res.setHeader("WWW-Authenticate", "Basic realm=Authorization Required");
+        context.res.setHeader(
+            "WWW-Authenticate",
+            "Basic realm=Authorization Required"
+        );
         context.res.end("401 Unauthorized");
         return { props: {} };
     }
     const [scheme, encoded] = auth.split(" ");
     if (scheme !== "Basic" || !encoded) {
         context.res.statusCode = 401;
-        context.res.setHeader("WWW-Authenticate", "Basic realm=Authorization Required");
+        context.res.setHeader(
+            "WWW-Authenticate",
+            "Basic realm=Authorization Required"
+        );
         context.res.end("401 Unauthorized");
         return { props: {} };
     }
@@ -37,7 +43,10 @@ export const getServerSideProps: GetServerSideProps = async (context) => {
     const [user, pass] = decoded.split(":");
     if (user !== BASIC_AUTH_USER || pass !== BASIC_AUTH_PASS) {
         context.res.statusCode = 401;
-        context.res.setHeader("WWW-Authenticate", "Basic realm=Authorization Required");
+        context.res.setHeader(
+            "WWW-Authenticate",
+            "Basic realm=Authorization Required"
+        );
         context.res.end("401 Unauthorized");
         return { props: {} };
     }
@@ -185,3 +194,4 @@ const index = () => {
 };
 
 export default index;
+

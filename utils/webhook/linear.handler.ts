@@ -1,33 +1,8 @@
-import { GENERAL, GITHUB, LINEAR, SHARED } from "../constants";
-import { LinearWebhookPayload, MilestoneState } from "../../typings";
-import prisma from "../../prisma";
-import {
-    decrypt,
-    getAttachmentQuery,
-    getSyncFooter,
-    isNumber,
-    skipReason
-} from "../index";
-import { Cycle, LinearClient, Project } from "@linear/sdk";
-import {
-    applyLabel,
-    createComment,
-    createLabel,
-    prepareMarkdownContent,
-    replaceMentions,
-    upsertUser
-} from "../../pages/api/utils";
-import got from "got";
-import { inviteMember } from "../linear";
+import { GENERAL, LINEAR, SHARED } from "../constants";
+import { ApiError } from "../errors";
 import { components } from "@octokit/openapi-types";
-import { linearQuery } from "../apollo";
-import {
-    createMilestone,
-    getGithubFooterWithLinearCommentId,
-    setIssueMilestone
-} from "../github";
-import { ApiError, getIssueUpdateError } from "../errors";
-import { Issue, User } from "@octokit/webhooks-types";
+import { generateAiFriendlyDescription } from "../../pages/api/utils"; // Added import
+import { LinearWebhookPayload } from "../../typings";
 
 export async function linearWebhookHandler(
     body: LinearWebhookPayload,
@@ -277,9 +252,10 @@ export async function linearWebhookHandler(
             }
 
             let markdown = data.description;
+            const aiFriendlyDescription = await generateAiFriendlyDescription(markdown ?? "");
 
             // Re-fetching the issue description returns it with public image URLs
-            if (markdown?.match(GENERAL.INLINE_IMG_TAG_REGEX)) {
+            if (aiFriendlyDescription?.match(GENERAL.INLINE_IMG_TAG_REGEX)) {
                 const publicIssue = await linear.issue(data.id);
                 if (publicIssue?.description) {
                     markdown = publicIssue.description;
@@ -287,7 +263,7 @@ export async function linearWebhookHandler(
             }
 
             const modifiedDescription = await prepareMarkdownContent(
-                markdown,
+                aiFriendlyDescription,
                 "linear"
             );
 
@@ -373,7 +349,8 @@ export async function linearWebhookHandler(
                             linearTeamId: data.teamId,
                             githubIssueNumber: createdIssueData.number,
                             linearIssueNumber: data.number,
-                            githubRepoId: repoId
+                            githubRepoId: repoId,
+                            aiGeneratedDescription: aiFriendlyDescription // Save AI description
                         }
                     }).then(() => {
                         console.log(`[INFO] Successfully created syncedIssue record in database`);
@@ -451,11 +428,11 @@ export async function linearWebhookHandler(
 
             if (applyLabelError) {
                 console.log(
-                    `Failed to apply labels to ${createdIssueData.id} in ${repoFullName}.`
+                    `Failed to apply labels to #${createdIssueData.id} in ${repoFullName}.`
                 );
             } else {
                 console.log(
-                    `Applied labels to ${createdIssueData.id} in ${repoFullName}.`
+                    `Applied labels to #${createdIssueData.id} in ${repoFullName}.`
                 );
             }
 
@@ -1045,85 +1022,76 @@ export async function linearWebhookHandler(
             }
 
             if (data.id?.includes(GITHUB.UUID_SUFFIX)) {
-                const reason = skipReason("issue", data.id, true);
-                console.log(reason);
-                return reason;
-            }
-
-            let markdown = data.description;
-
-            if (markdown?.match(GENERAL.INLINE_IMG_TAG_REGEX)) {
-                const publicIssue = await linear.issue(data.id);
-                if (publicIssue?.description) {
-                    markdown = publicIssue.description;
-                }
-            }
-
-            const modifiedDescription = await prepareMarkdownContent(
-                markdown,
-                "linear"
-            );
-
-            const assignee = await prisma.user.findFirst({
-                where: { linearUserId: data.assigneeId },
-                select: { githubUsername: true }
-            });
-
-            const createdIssueResponse = await got.post(issuesEndpoint, {
-                headers: defaultHeaders,
-                json: {
-                    title: `[${ticketName}] ${data.title}`,
-                    body: `${
-                        modifiedDescription ?? ""
-                    }\n\n<sub>${getSyncFooter()} | [${ticketName}](${url})</sub>`,
-                    ...(data.assigneeId &&
-                        assignee?.githubUsername && {
-                            assignees: [assignee?.githubUsername]
-                        })
-                }
-            });
-
-            if (createdIssueResponse.statusCode > 201) {
-                const reason = `Failed to create issue for ${data.id} with status ${createdIssueResponse.statusCode}.`;
-                console.log(reason);
-                throw new ApiError(reason, 500);
-            }
-
-            const createdIssueData: components["schemas"]["issue"] = JSON.parse(
-                createdIssueResponse.body
-            );
-
-            const attachmentQuery = getAttachmentQuery(
-                data.id,
-                createdIssueData.number,
-                repoFullName
-            );
-
-            await Promise.all([
-                linearQuery(attachmentQuery, linearKey).then(response => {
-                    if (!response?.data?.attachmentCreate?.success) {
-                        console.log(
-                            `Failed to add attachment to ${ticketName} for ${
-                                createdIssueData.id
-                            }: ${response?.error || ""}.`
-                        );
-                    } else {
-                        console.log(
-                            `Created attachment on ${ticketName} for ${createdIssueData.id}.`
-                        );
+                // Issue created from GitHub, skip AI description generation here
+                // as it would have been handled by the GitHub webhook
+                console.log(`[DEBUG] Skipping AI description for issue created from GitHub: ${data.id}`);
+            } else {
+                markdown = data.description;
+                const aiFriendlyDescriptionOnCreate = await generateAiFriendlyDescription(markdown ?? "");
+    
+                if (aiFriendlyDescriptionOnCreate?.match(GENERAL.INLINE_IMG_TAG_REGEX)) {
+                    const publicIssue = await linear.issue(data.id);
+                    if (publicIssue?.description) {
+                        markdown = publicIssue.description;
                     }
-                }),
-                prisma.syncedIssue.create({
-                    data: {
-                        githubIssueId: createdIssueData.id,
-                        linearIssueId: data.id,
-                        linearTeamId: data.teamId,
-                        githubIssueNumber: createdIssueData.number,
-                        linearIssueNumber: data.number,
-                        githubRepoId: repoId
+                }
+    
+                modifiedDescription = await prepareMarkdownContent(
+                    aiFriendlyDescriptionOnCreate,
+                    "linear"
+                );
+    
+                // Update the json payload to use the potentially new aiFriendlyDescriptionOnCreate
+                 createdIssueResponse = await got.post(issuesEndpoint, {
+                    headers: defaultHeaders,
+                    json: {
+                        title: `[${ticketName}] ${data.title}`,
+                        body: `${
+                            modifiedDescription ?? ""
+                        }\n\n<sub>${getSyncFooter()} | [${ticketName}](${url})</sub>`,
+                        ...(data.assigneeId &&
+                            assignee?.githubUsername && {
+                                assignees: [assignee?.githubUsername]
+                            })
                     }
-                })
-            ] as Promise<void>[]);
+                });
+    
+                if (createdIssueResponse.statusCode > 201) {
+                    const reason = `Failed to create issue for ${data.id} with status ${createdIssueResponse.statusCode}.`;
+                    console.log(reason);
+                    throw new ApiError(reason, 500);
+                }
+    
+                createdIssueData = JSON.parse(createdIssueResponse.body);
+    
+                attachmentQuery = getAttachmentQuery(
+                    data.id,
+                    createdIssueData.number,
+                    repoFullName
+                );
+    
+                await Promise.all([
+                    linearQuery(attachmentQuery, linearKey).then(response => {
+                        if (!response?.data?.attachmentCreate?.success) {
+                            console.log(
+                                `Failed to add attachment to ${data.id} for ${createdIssueData.id}: ${response?.error}`
+                            );
+                        }
+                    }),
+                    prisma.syncedIssue.create({
+                        data: {
+                            githubIssueId: createdIssueData.id,
+                            linearIssueId: data.id,
+                            linearTeamId: data.teamId,
+                            githubIssueNumber: createdIssueData.number,
+                            linearIssueNumber: data.number,
+                            githubRepoId: repoId,
+                            aiGeneratedDescription: aiFriendlyDescriptionOnCreate // Save AI description
+                        }
+                    })
+                ] as Promise<void>);
+            }
+
 
             // Apply all labels to newly-created issue
             const labelIds = data.labelIds.filter(id => id != publicLabelId);

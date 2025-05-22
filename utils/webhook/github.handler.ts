@@ -30,6 +30,7 @@ import got from "got";
 import { linearQuery } from "../apollo";
 import { ApiError } from "../errors";
 import { fetchCommentHtml, extractImagesFromHtml } from "../github";
+import { generateAiFriendlyDescription } from "../../pages/api/utils"; // Added import
 
 export async function githubWebhookHandler(
     body: IssuesEvent | IssueCommentCreatedEvent | MilestoneEvent,
@@ -344,8 +345,10 @@ export async function githubWebhookHandler(
             return `Skipping creation as issue ${issue.number}'s title seems to contain a Linear ticket ID.`;
         }
 
+        const aiFriendlyDescription = await generateAiFriendlyDescription(issue.body ?? "");
+
         const modifiedDescription = await prepareMarkdownContent(
-            issue.body,
+            aiFriendlyDescription, // Use AI generated description
             "github",
             {
                 anonymous: anonymousUser,
@@ -416,6 +419,8 @@ export async function githubWebhookHandler(
                     repoName
                 );
 
+                const currentAiGeneratedDescription = aiFriendlyDescription; // Capture the current value
+
                 const [
                     newSyncedIssue,
                     titleRenameResponse,
@@ -428,13 +433,14 @@ export async function githubWebhookHandler(
                             linearIssueId: createdIssue.id,
                             linearIssueNumber: createdIssue.number,
                             linearTeamId: team.id,
-                            githubRepoId: repository.id
+                            githubRepoId: repository.id,
+                            aiGeneratedDescription: currentAiGeneratedDescription // Use captured value
                         }
                     }),
                     got.patch(`${issuesEndpoint}/${issue.number}`, {
                         json: {
                             title: `[${ticketName}] ${issue.title}`,
-                            body: `${issue.body}\n\n<sub>[${ticketName}](${createdIssue.url})</sub>`
+                            body: `${aiFriendlyDescription}\n\n<sub>[${ticketName}](${createdIssue.url})</sub>` // Update GH with AI description
                         },
                         ...defaultHeaders
                     }),
@@ -566,8 +572,10 @@ export async function githubWebhookHandler(
                 return `Skipping milestone removal for ${issue.id}: not synced (repo: ${repository.id}).`;
             }
 
-            const modifiedDescription = await prepareMarkdownContent(
-                issue.body,
+            const aiFriendlyDescriptionForMilestone = await generateAiFriendlyDescription(issue.body ?? "");
+
+            const modifiedDescriptionForMilestone = await prepareMarkdownContent(
+                aiFriendlyDescriptionForMilestone, // Use AI generated description
                 "github",
                 {
                     anonymous: anonymousUser,
@@ -583,7 +591,7 @@ export async function githubWebhookHandler(
             const createdIssueData = await linear.createIssue({
                 id: generateLinearUUID(),
                 title: issue.title,
-                description: `${modifiedDescription ?? ""}`,
+                description: `${modifiedDescriptionForMilestone ?? ""}`,
                 teamId: linearTeamId,
                 labelIds: [publicLabelId],
                 ...(issue.assignee?.id &&
@@ -619,6 +627,7 @@ export async function githubWebhookHandler(
                         issue.number,
                         repoName
                     );
+                    const currentAiGeneratedDescriptionForMilestone = aiFriendlyDescriptionForMilestone; // Capture the current value
 
                     // Add to DB, update title, add attachment to issue, and fetch comments in parallel
                     const [
@@ -634,13 +643,14 @@ export async function githubWebhookHandler(
                                 linearIssueId: createdIssue.id,
                                 linearIssueNumber: createdIssue.number,
                                 linearTeamId: team.id,
-                                githubRepoId: repository.id
+                                githubRepoId: repository.id,
+                                aiGeneratedDescription: currentAiGeneratedDescriptionForMilestone // Use captured value
                             }
                         }),
                         got.patch(`${issuesEndpoint}/${issue.number}`, {
                             json: {
                                 title: `[${ticketName}] ${issue.title}`,
-                                body: `${issue.body}\n\n<sub>[${ticketName}](${createdIssue.url})</sub>`
+                                body: `${aiFriendlyDescriptionForMilestone}\n\n<sub>[${ticketName}](${createdIssue.url})</sub>` // Update GH with AI description
                             },
                             ...defaultHeaders
                         }),

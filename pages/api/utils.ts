@@ -22,6 +22,7 @@ import {
 } from "@octokit/webhooks-types";
 import { ApiError } from "../../utils/errors";
 import { generateLinearUUID } from "../../utils/linear";
+import OpenAI from "openai";
 
 /**
  * Server-only utility functions
@@ -298,6 +299,60 @@ export const prepareMarkdownContent = async (
     } catch (error) {
         console.error(error);
         return "An error occurred while preparing the markdown content.";
+    }
+};
+
+/**
+ * Generates an AI-friendly description using OpenAI API.
+ * @param originalDescription The original issue description.
+ * @returns The AI-generated description or the original if an error occurs.
+ */
+export const generateAiFriendlyDescription = async (
+    originalDescription: string
+): Promise<string> => {
+    if (!process.env.OPENAI_API_KEY) {
+        console.warn("OPENAI_API_KEY is not set. Skipping AI description generation.");
+        return originalDescription;
+    }
+
+    if (!originalDescription?.trim()) {
+        console.log("Original description is empty. Skipping AI description generation.");
+        return originalDescription;
+    }
+
+    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+    try {
+        console.log("Generating AI-friendly description...");
+        const response = await client.chat.completions.create({
+            model: "gpt-3.5-turbo", // Or "gpt-4" if preferred and available
+            messages: [
+                {
+                    role: "system",
+                    content:
+                        "You are an expert technical writer. Rewrite the following issue description to be clear, concise, actionable, and easily understood by an AI agent. Focus on extracting key tasks, objectives, and any specific requirements mentioned. If the input is very short or already well-structured, you can choose to make minimal changes or return it as is. Ensure the output is suitable for an issue tracking system."
+                },
+                {
+                    role: "user",
+                    content: originalDescription
+                }
+            ],
+            temperature: 0.5 // Adjust for creativity vs. factualness
+        });
+
+        const aiDescription = response.choices[0]?.message?.content?.trim();
+
+        if (aiDescription) {
+            console.log("AI description generated successfully.");
+            // Call prepareMarkdownContent on the AI description
+            return await prepareMarkdownContent(aiDescription, "linear"); // Assuming 'linear' as default platform, adjust if needed
+        } else {
+            console.warn("OpenAI response did not contain a description. Using original.");
+            return originalDescription;
+        }
+    } catch (error) {
+        console.error("Error generating AI description:", error);
+        return originalDescription; // Fallback to original description
     }
 };
 

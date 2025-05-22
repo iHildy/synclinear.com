@@ -17,6 +17,8 @@ model SyncedIssue {
     githubIssueId BigInt
     linearIssueId String
 
+    aiGeneratedDescription String? // Added field for AI-generated description
+
     linearTeamId String
     LinearTeam   LinearTeam @relation(fields: [linearTeamId], references: [teamId])
 
