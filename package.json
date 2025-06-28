@@ -8,7 +8,7 @@
         "start": "next start",
         "lint": "next lint",
         "create-key": "ts-node create-key.ts",
-        "jules:retry": "ts-node scripts/julesRetry.ts"
+        "jules:retry": "node scripts/julesRetry.js"
     },
     "devDependencies": {
         "@next/eslint-plugin-next": "^13.0.6",

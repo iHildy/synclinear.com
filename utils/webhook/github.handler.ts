@@ -321,6 +321,39 @@ export async function githubWebhookHandler(
                 modifiedComment,
                 issue
             );
+
+            /* -------------------- Jules automation: Agent Started status -------------------- */
+            if (
+                sender?.login === "google-labs-jules" &&
+                comment.body?.includes(
+                    "When finished, you will see another comment and be able to review a PR."
+                )
+            ) {
+                if (syncedIssue) {
+                    try {
+                        const states = await linear.workflowStates({
+                            filter: { team: { id: { eq: linearTeamId } } }
+                        });
+                        const agentState = states.nodes.find(
+                            s => s.name.toLowerCase() === "agent started"
+                        );
+                        if (agentState) {
+                            await linear.updateIssue(
+                                syncedIssue.linearIssueId,
+                                {
+                                    stateId: agentState.id
+                                }
+                            );
+                            console.log(
+                                `Set Linear issue ${syncedIssue.linearIssueId} state to Agent Started.`
+                            );
+                        }
+                    } catch (err) {
+                        console.error("Failed to set Agent Started state", err);
+                    }
+                }
+            }
+            /* ------------------------------------------------------------------------------ */
         }
     }
 
