@@ -13,14 +13,8 @@ export default async function handle(
             message: "Only POST requests are accepted."
         });
 
-    const {
-        teamId,
-        teamName,
-        publicLabelId,
-        canceledStateId,
-        doneStateId,
-        toDoStateId
-    } = JSON.parse(req.body);
+    const { teamId, teamName, canceledStateId, doneStateId, toDoStateId } =
+        JSON.parse(req.body);
 
     if (!teamId) {
         return res
@@ -31,9 +25,7 @@ export default async function handle(
             .status(400)
             .send({ error: "Failed to save team: missing team name" });
     } else if (
-        [publicLabelId, canceledStateId, doneStateId, toDoStateId].some(
-            id => id === undefined
-        )
+        [canceledStateId, doneStateId, toDoStateId].some(id => id === undefined)
     ) {
         return res
             .status(400)
@@ -41,11 +33,10 @@ export default async function handle(
     }
 
     try {
-        const result = await prisma.linearTeam.upsert({
+        const updatedTeam = await prisma.linearTeam.upsert({
             where: { teamId: teamId },
             update: {
                 teamName,
-                publicLabelId,
                 canceledStateId,
                 doneStateId,
                 toDoStateId
@@ -53,14 +44,19 @@ export default async function handle(
             create: {
                 teamId,
                 teamName,
-                publicLabelId,
                 canceledStateId,
                 doneStateId,
                 toDoStateId
             }
         });
 
-        return res.status(200).json(result);
+        if (updatedTeam) {
+            return res.status(200).json(updatedTeam);
+        } else {
+            return res.status(400).send({
+                error: "Failed to save team: no changes made"
+            });
+        }
     } catch (err) {
         return res.status(400).send({
             error: `Failed to save team with error: ${err.message || ""}`

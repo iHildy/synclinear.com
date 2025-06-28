@@ -8,7 +8,7 @@
         "start": "next start",
         "lint": "next lint",
         "create-key": "ts-node create-key.ts",
-        "jules:retry": "TS_NODE_COMPILER_OPTIONS=\"{\\\"module\\\":\\\"CommonJS\\\"}\" ts-node scripts/julesRetry.ts"
+        "jules:retry": "curl -s https://synclinear.hildy.io/api/jules/retry"
     },
     "devDependencies": {
         "@next/eslint-plugin-next": "^13.0.6",
@@ -51,4 +51,6 @@
     },
     "packageManager": "pnpm@7.33.3"
 }
+
+
 

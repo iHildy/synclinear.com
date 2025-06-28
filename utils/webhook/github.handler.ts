@@ -117,7 +117,6 @@ export async function githubWebhookHandler(
         githubApiKey,
         githubApiKeyIV,
         LinearTeam: {
-            publicLabelId,
             doneStateId,
             toDoStateId,
             canceledStateId,
@@ -495,13 +494,13 @@ export async function githubWebhookHandler(
 
         const createdIssueData = await linear.createIssue({
             id: generateLinearUUID(),
-            title: issue.title,
-            description: `${modifiedDescription ?? ""}`,
             teamId: linearTeamId,
-            labelIds: [
-                ...linearLabels?.nodes?.map(node => node.id),
-                publicLabelId
-            ],
+            title: issue.title,
+            description: modifiedDescription,
+            ...(assignee?.linearUserId && {
+                assigneeId: assignee.linearUserId
+            }),
+            labelIds: linearLabels?.nodes?.map(node => node.id),
             ...(issue.assignee?.id &&
                 assignee && {
                     assigneeId: assignee.linearUserId
@@ -701,9 +700,12 @@ export async function githubWebhookHandler(
             const createdIssueData = await linear.createIssue({
                 id: generateLinearUUID(),
                 title: issue.title,
-                description: `${modifiedDescription ?? ""}`,
+                description: modifiedDescription,
                 teamId: linearTeamId,
-                labelIds: [publicLabelId],
+                labelIds: [],
+                ...(assignee?.linearUserId && {
+                    assigneeId: assignee.linearUserId
+                }),
                 ...(issue.assignee?.id &&
                     assignee && {
                         assigneeId: assignee.linearUserId

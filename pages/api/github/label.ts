@@ -1,4 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from "next";
+import { GITHUB } from "../../../utils/constants";
 import { createLabel } from "../utils";
 
 // POST /api/github/label

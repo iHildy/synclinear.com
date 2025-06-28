@@ -32,8 +32,6 @@ model LinearTeam {
   teamId   String @unique
   teamName String
 
-  publicLabelId String
-
   canceledStateId String
   doneStateId     String
   toDoStateId     String

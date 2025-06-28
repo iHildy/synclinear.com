@@ -127,7 +127,7 @@ export async function linearWebhookHandler(
         githubApiKey,
         githubUserId,
         githubApiKeyIV,
-        LinearTeam: { publicLabelId, doneStateId, canceledStateId },
+        LinearTeam: { doneStateId, canceledStateId },
         GitHubRepo: { repoName: repoFullName, repoId }
     } = sync;
 
@@ -186,24 +186,13 @@ export async function linearWebhookHandler(
     }
 
     if (action === "update") {
-        // Label updated on an already-Public issue
-        if (updatedFrom.labelIds?.includes(publicLabelId)) {
+        // Label updated on an already-synced issue
+        if (syncedIssue) {
             // Label(s) removed
             if (data.labelIds.length < updatedFrom.labelIds.length) {
                 const removedLabelId = updatedFrom.labelIds.find(
                     id => !data.labelIds.includes(id)
                 );
-
-                // Public label removed
-                if (removedLabelId === publicLabelId) {
-                    await prisma.syncedIssue.delete({
-                        where: { id: syncedIssue.id }
-                    });
-
-                    const reason = `Deleted synced issue ${ticketName} after Public label removed.`;
-                    console.log(reason);
-                    return reason;
-                }
 
                 const label = await linear.issueLabel(removedLabelId);
                 if (!label) {
@@ -270,257 +259,6 @@ export async function linearWebhookHandler(
                 } else {
                     console.log(
                         `Applied label "${labelName}" to issue #${syncedIssue.githubIssueId}.`
-                    );
-                }
-            }
-        } else if (
-            updatedFrom.labelIds &&
-            !updatedFrom.labelIds?.includes(publicLabelId) &&
-            data.labelIds?.includes(publicLabelId)
-        ) {
-            // Public label added to an issue
-            if (syncedIssue) {
-                const reason = `Skipping issue create: ${data.id} exists as ${syncedIssue.githubIssueId}`;
-                console.log(reason);
-                return reason;
-            }
-
-            let markdown = data.description;
-
-            // Re-fetching the issue description returns it with public image URLs
-            if (markdown?.match(GENERAL.INLINE_IMG_TAG_REGEX)) {
-                const publicIssue = await linear.issue(data.id);
-                if (publicIssue?.description) {
-                    markdown = publicIssue.description;
-                }
-            }
-
-            const modifiedDescription = await prepareMarkdownContent(
-                markdown,
-                "linear"
-            );
-
-            const assignee = await prisma.user.findFirst({
-                where: { linearUserId: data.assigneeId },
-                select: { githubUsername: true }
-            });
-
-            const createdIssueResponse = await got.post(issuesEndpoint, {
-                headers: defaultHeaders,
-                json: {
-                    title: `[${ticketName}] ${data.title}`,
-                    body: `${
-                        modifiedDescription ?? ""
-                    }\n\n<sub>${getSyncFooter()} | ${ticketName}</sub>`,
-                    ...(data.assigneeId &&
-                        assignee?.githubUsername && {
-                            assignees: [assignee?.githubUsername]
-                        })
-                }
-            });
-
-            if (
-                !syncs.some(
-                    s => s.linearUserId === (data.userId ?? data.creatorId)
-                )
-            ) {
-                await inviteMember(
-                    data.creatorId,
-                    data.teamId,
-                    repoFullName,
-                    linear
-                );
-            }
-
-            if (createdIssueResponse.statusCode > 201) {
-                const reason = `Failed to create issue for ${data.id} with status ${createdIssueResponse.statusCode}.`;
-                console.log(reason);
-                throw new ApiError(reason, 500);
-            }
-
-            const createdIssueData: components["schemas"]["issue"] = JSON.parse(
-                createdIssueResponse.body
-            );
-
-            const linearIssue = await linear.issue(data.id);
-
-            const attachmentQuery = getAttachmentQuery(
-                data.id,
-                createdIssueData.number,
-                repoFullName
-            );
-
-            // When creating GitHub issue
-            console.log(
-                `[DEBUG] Creating GitHub issue for Linear issue ${data.team?.key}-${data.number}`
-            );
-
-            // After GitHub issue creation
-            console.log(
-                `[DEBUG] GitHub issue created with status: ${createdIssueResponse.statusCode}, id: ${createdIssueData.id}, number: ${createdIssueData.number}`
-            );
-
-            // Before database write
-            console.log(
-                `[DEBUG] About to create syncedIssue record in database`
-            );
-
-            // When writing to database table
-            try {
-                await Promise.all([
-                    linearQuery(attachmentQuery, linearKey).then(response => {
-                        if (!response?.data?.attachmentCreate?.success) {
-                            console.log(
-                                `[ERROR] Failed to add attachment to ${ticketName} for ${
-                                    createdIssueData.id
-                                }: ${response?.error || ""}.`
-                            );
-                        } else {
-                            console.log(
-                                `[INFO] Created attachment on ${ticketName} for ${createdIssueData.id}.`
-                            );
-                        }
-                    }),
-                    prisma.syncedIssue
-                        .create({
-                            data: {
-                                githubIssueId: createdIssueData.id,
-                                linearIssueId: data.id,
-                                linearTeamId: data.teamId,
-                                githubIssueNumber: createdIssueData.number,
-                                linearIssueNumber: data.number,
-                                githubRepoId: repoId
-                            }
-                        })
-                        .then(() => {
-                            console.log(
-                                `[INFO] Successfully created syncedIssue record in database`
-                            );
-                        })
-                ] as Promise<void>[]);
-            } catch (error) {
-                console.log(
-                    `[ERROR] Failed to create syncedIssue record: ${error.message}`
-                );
-                console.log(`[ERROR] Stack trace: ${error.stack}`);
-                throw error;
-            }
-
-            // Apply all labels to newly-created issue
-            const labelIds = data.labelIds.filter(id => id != publicLabelId);
-            const labelNames: string[] = [];
-            for (const labelId of labelIds) {
-                if (labelId === publicLabelId) continue;
-
-                const label = await linear.issueLabel(labelId);
-                if (!label) {
-                    console.log(
-                        `Could not find label ${labelId} for ${ticketName}.`
-                    );
-                    continue;
-                }
-
-                const { createdLabel, error } = await createLabel({
-                    repoFullName,
-                    label,
-                    githubAuthHeader,
-                    userAgentHeader
-                });
-
-                if (error) {
-                    console.log(
-                        `Failed to create GH label "${label.name}" in ${repoFullName}.`
-                    );
-                    continue;
-                }
-
-                const labelName = createdLabel ? createdLabel.name : label.name;
-
-                labelNames.push(labelName);
-            }
-
-            // Add priority label if applicable
-            if (!!data.priority && SHARED.PRIORITY_LABELS[data.priority]) {
-                const priorityLabel = SHARED.PRIORITY_LABELS[data.priority];
-                const { createdLabel, error } = await createLabel({
-                    repoFullName,
-                    label: priorityLabel,
-                    githubAuthHeader,
-                    userAgentHeader
-                });
-
-                if (error) {
-                    console.log(
-                        `Failed to create priority label "${priorityLabel.name}" in ${repoFullName}.`
-                    );
-                } else {
-                    const labelName = createdLabel
-                        ? createdLabel.name
-                        : priorityLabel.name;
-
-                    labelNames.push(labelName);
-                }
-            }
-
-            const { error: applyLabelError } = await applyLabel({
-                repoFullName,
-                issueNumber: BigInt(createdIssueData.number),
-                labelNames,
-                githubAuthHeader,
-                userAgentHeader
-            });
-
-            if (applyLabelError) {
-                console.log(
-                    `Failed to apply labels to ${createdIssueData.id} in ${repoFullName}.`
-                );
-            } else {
-                console.log(
-                    `Applied labels to ${createdIssueData.id} in ${repoFullName}.`
-                );
-            }
-
-            // Sync all comments on the issue
-            const linearComments = await linearIssue.comments().then(comments =>
-                Promise.all(
-                    comments.nodes.map(comment =>
-                        comment.user?.then(user => ({
-                            comment,
-                            user
-                        }))
-                    )
-                )
-            );
-
-            for (const linearComment of linearComments) {
-                if (!linearComment) continue;
-
-                const { comment, user } = linearComment;
-
-                const modifiedComment = await replaceMentions(
-                    comment.body,
-                    "linear"
-                );
-                const footer = getGithubFooterWithLinearCommentId(
-                    user.displayName,
-                    comment.id
-                );
-
-                const { error: commentError } = await createComment({
-                    repoFullName,
-                    issueNumber: BigInt(createdIssueData.number),
-                    body: `${modifiedComment || ""}${footer}`,
-                    githubAuthHeader,
-                    userAgentHeader
-                });
-
-                if (commentError) {
-                    console.log(
-                        `Failed to add comment to ${createdIssueData.id} for ${ticketName}.`
-                    );
-                } else {
-                    console.log(
-                        `Created comment on ${createdIssueData.id} for ${ticketName}.`
                     );
                 }
             }
@@ -1141,11 +879,9 @@ export async function linearWebhookHandler(
             ] as Promise<void>[]);
 
             // Apply all labels to newly-created issue
-            const labelIds = data.labelIds.filter(id => id != publicLabelId);
+            const labelIds = data.labelIds;
             const labelNames: string[] = [];
             for (const labelId of labelIds) {
-                if (labelId === publicLabelId) continue;
-
                 const label = await linear.issueLabel(labelId);
                 if (!label) {
                     console.log(
