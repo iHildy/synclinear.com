@@ -211,28 +211,67 @@ export async function githubWebhookHandler(
             /* -------------------- Jules automation: comment from google-labs-jules -------------------- */
             if (
                 sender?.login === "google-labs-jules" &&
-                comment.body?.startsWith(
+                comment.body?.includes(
                     "You are currently at your concurrent task limit"
                 )
             ) {
                 const hasHuman = issue.labels?.some(l => l.name === "Human");
-                if (!hasHuman) {
-                    await markJulesTaskForRetry({
-                        githubRepoId: BigInt(repository.id),
-                        githubIssueId: BigInt(issue.id),
-                        githubIssueNumber: BigInt(issue.number)
-                    });
+                console.log(
+                    `[Jules] Task limit comment detected for issue #${issue.number}, hasHuman: ${hasHuman}`
+                );
 
-                    // Remove the `jules` label to signal pause
+                if (!hasHuman) {
                     try {
-                        await got.delete(
-                            `${GITHUB.REPO_ENDPOINT}/${repoName}/issues/${issue.number}/labels/jules`,
-                            { headers: defaultHeaders.headers }
+                        console.log(
+                            `[Jules] Marking task for retry: issueId=${issue.id}, repoId=${repository.id}`
                         );
+                        await markJulesTaskForRetry({
+                            githubRepoId: BigInt(repository.id),
+                            githubIssueId: BigInt(issue.id),
+                            githubIssueNumber: BigInt(issue.number)
+                        });
+                        console.log(
+                            `[Jules] Successfully marked task for retry: issue #${issue.number}`
+                        );
+
+                        // Remove the `jules` label and add `jules-queue` label
+                        try {
+                            await got.delete(
+                                `${GITHUB.REPO_ENDPOINT}/${repoName}/issues/${issue.number}/labels/jules`,
+                                { headers: defaultHeaders.headers }
+                            );
+                            console.log(
+                                `[Jules] Removed jules label from #${issue.number}`
+                            );
+                        } catch (e) {
+                            console.error(
+                                `[Jules] Failed to remove jules label from #${issue.number}:`,
+                                e?.response?.body || e
+                            );
+                        }
+
+                        // Add jules-queue label
+                        try {
+                            await got.post(
+                                `${GITHUB.REPO_ENDPOINT}/${repoName}/issues/${issue.number}/labels`,
+                                {
+                                    json: { labels: ["jules-queue"] },
+                                    headers: defaultHeaders.headers
+                                }
+                            );
+                            console.log(
+                                `[Jules] Added jules-queue label to #${issue.number}`
+                            );
+                        } catch (e) {
+                            console.error(
+                                `[Jules] Failed to add jules-queue label to #${issue.number}:`,
+                                e?.response?.body || e
+                            );
+                        }
                     } catch (e) {
                         console.error(
-                            `Failed to remove jules label from #${issue.number}:`,
-                            e?.response?.body || e
+                            `[Jules] Failed to mark task for retry on issue #${issue.number}:`,
+                            e
                         );
                     }
                 }
@@ -321,34 +360,50 @@ export async function githubWebhookHandler(
                 issue
             );
 
-            /* -------------------- Jules automation: Agent Started status -------------------- */
+            /* -------------------- Jules automation: In Progress status -------------------- */
             if (
                 sender?.login === "google-labs-jules" &&
                 comment.body?.includes(
                     "When finished, you will see another comment and be able to review a PR."
                 )
             ) {
+                console.log(
+                    `[Jules] Agent started comment detected for issue #${issue.number}`
+                );
                 if (syncedIssue) {
                     try {
                         const states = await linear.workflowStates({
                             filter: { team: { id: { eq: linearTeamId } } }
                         });
+                        // Try "In Progress" first, then fallback to "Agent Started"
+                        const inProgressState = states.nodes.find(
+                            s => s.name.toLowerCase() === "in progress"
+                        );
                         const agentState = states.nodes.find(
                             s => s.name.toLowerCase() === "agent started"
                         );
-                        if (agentState) {
+                        const targetState = inProgressState || agentState;
+
+                        if (targetState) {
                             await linear.updateIssue(
                                 syncedIssue.linearIssueId,
                                 {
-                                    stateId: agentState.id
+                                    stateId: targetState.id
                                 }
                             );
                             console.log(
-                                `Set Linear issue ${syncedIssue.linearIssueId} state to Agent Started.`
+                                `[Jules] Set Linear issue ${syncedIssue.linearIssueId} state to ${targetState.name}.`
+                            );
+                        } else {
+                            console.warn(
+                                `[Jules] No "In Progress" or "Agent Started" state found for team ${linearTeamId}`
                             );
                         }
                     } catch (err) {
-                        console.error("Failed to set Agent Started state", err);
+                        console.error(
+                            "[Jules] Failed to set In Progress/Agent Started state",
+                            err
+                        );
                     }
                 }
             }
