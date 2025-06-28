@@ -1,114 +1,133 @@
 datasource db {
-    provider = "postgres"
-    url      = env("DATABASE_URL")
+  provider = "postgres"
+  url      = env("DATABASE_URL")
 }
 
 generator client {
-    provider      = "prisma-client-js"
-    binaryTargets = ["native", "linux-musl"]
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl"]
 }
 
 model SyncedIssue {
-    id String @id @default(cuid())
+  id String @id @default(cuid())
 
-    githubIssueNumber BigInt
-    linearIssueNumber Int
+  githubIssueNumber BigInt
+  linearIssueNumber Int
 
-    githubIssueId BigInt
-    linearIssueId String
+  githubIssueId BigInt
+  linearIssueId String
 
-    linearTeamId String
-    LinearTeam   LinearTeam @relation(fields: [linearTeamId], references: [teamId])
+  linearTeamId String
+  LinearTeam   LinearTeam @relation(fields: [linearTeamId], references: [teamId])
 
-    githubRepoId BigInt
-    GitHubRepo   GitHubRepo @relation(fields: [githubRepoId], references: [repoId])
+  githubRepoId BigInt
+  GitHubRepo   GitHubRepo @relation(fields: [githubRepoId], references: [repoId])
 
-    @@map("synced_issues")
+  @@map("synced_issues")
 }
 
 model LinearTeam {
-    id String @id @default(cuid())
+  id String @id @default(cuid())
 
-    teamId   String @unique
-    teamName String
+  teamId   String @unique
+  teamName String
 
-    publicLabelId String
+  publicLabelId String
 
-    canceledStateId String
-    doneStateId     String
-    toDoStateId     String
+  canceledStateId String
+  doneStateId     String
+  toDoStateId     String
 
-    Sync Sync[]
+  Sync Sync[]
 
-    SyncedIssue SyncedIssue[]
-    Milestone   Milestone[]
+  SyncedIssue SyncedIssue[]
+  Milestone   Milestone[]
 
-    @@map("linear_teams")
+  @@map("linear_teams")
 }
 
 model GitHubRepo {
-    id String @id @default(cuid())
+  id String @id @default(cuid())
 
-    repoId   BigInt @unique
-    repoName String
+  repoId   BigInt @unique
+  repoName String
 
-    webhookSecret String
+  webhookSecret String
 
-    Sync Sync[]
+  Sync Sync[]
 
-    SyncedIssue SyncedIssue[]
-    Milestone   Milestone[]
+  SyncedIssue SyncedIssue[]
+  Milestone   Milestone[]
+  JulesTask   JulesTask[]
 
-    @@map("github_repos")
+  @@map("github_repos")
 }
 
 model Sync {
-    id String @id @default(cuid())
+  id String @id @default(cuid())
 
-    githubUserId BigInt
-    linearUserId String
+  githubUserId BigInt
+  linearUserId String
 
-    GitHubRepo     GitHubRepo @relation(fields: [githubRepoId], references: [repoId])
-    githubRepoId   BigInt
-    githubApiKey   String
-    githubApiKeyIV String
+  GitHubRepo     GitHubRepo @relation(fields: [githubRepoId], references: [repoId])
+  githubRepoId   BigInt
+  githubApiKey   String
+  githubApiKeyIV String
 
-    LinearTeam     LinearTeam @relation(fields: [linearTeamId], references: [teamId])
-    linearTeamId   String
-    linearApiKey   String
-    linearApiKeyIV String
+  LinearTeam     LinearTeam @relation(fields: [linearTeamId], references: [teamId])
+  linearTeamId   String
+  linearApiKey   String
+  linearApiKeyIV String
 
-    @@unique([githubUserId, linearUserId, githubRepoId, linearTeamId])
-    @@map("syncs")
+  @@unique([githubUserId, linearUserId, githubRepoId, linearTeamId])
+  @@map("syncs")
 }
 
 model User {
-    id String @id @default(cuid())
+  id String @id @default(cuid())
 
-    githubUserId   BigInt
-    githubUsername String
-    githubEmail    String?
+  githubUserId   BigInt
+  githubUsername String
+  githubEmail    String?
 
-    linearUserId   String
-    linearUsername String
-    linearEmail    String?
+  linearUserId   String
+  linearUsername String
+  linearEmail    String?
 
-    @@unique([githubUserId, linearUserId])
-    @@map("users")
+  @@unique([githubUserId, linearUserId])
+  @@map("users")
 }
 
 model Milestone {
-    id String @id @default(cuid())
+  id String @id @default(cuid())
 
-    milestoneId Int
-    cycleId     String
+  milestoneId Int
+  cycleId     String
 
-    GitHubRepo   GitHubRepo @relation(fields: [githubRepoId], references: [repoId])
-    githubRepoId BigInt
+  GitHubRepo   GitHubRepo @relation(fields: [githubRepoId], references: [repoId])
+  githubRepoId BigInt
 
-    LinearTeam   LinearTeam @relation(fields: [linearTeamId], references: [teamId])
-    linearTeamId String
+  LinearTeam   LinearTeam @relation(fields: [linearTeamId], references: [teamId])
+  linearTeamId String
 
-    @@unique([milestoneId, githubRepoId, cycleId, linearTeamId])
-    @@map("milestones")
+  @@unique([milestoneId, githubRepoId, cycleId, linearTeamId])
+  @@map("milestones")
+}
+
+model JulesTask {
+  id String @id @default(cuid())
+
+  githubIssueId     BigInt     @unique // Global node id of the GitHub issue
+  githubIssueNumber BigInt // Human-readable issue number in repo
+  githubRepoId      BigInt
+  GitHubRepo        GitHubRepo @relation(fields: [githubRepoId], references: [repoId])
+
+  retryCount      Int       @default(0) // How many times task was retried
+  flaggedForRetry Boolean   @default(false) // Whether a retry is queued
+  lastRetryAt     DateTime? // Timestamp of last retry attempt
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("jules_tasks")
 }
