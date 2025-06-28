@@ -7,7 +7,8 @@
         "release": "npx prisma generate && npx prisma migrate deploy && next build",
         "start": "next start",
         "lint": "next lint",
-        "create-key": "ts-node create-key.ts"
+        "create-key": "ts-node create-key.ts",
+        "jules:retry": "ts-node scripts/julesRetry.ts"
     },
     "devDependencies": {
         "@next/eslint-plugin-next": "^13.0.6",

@@ -1,0 +1,20 @@
+name: Jules Retry Queue
+
+on:
+    schedule:
+        - cron: "*/30 * * * *" # every 30 minutes
+    workflow_dispatch:
+
+jobs:
+    retry:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Call Jules retry endpoint
+              env:
+                  RETRY_URL: ${{ secrets.JULES_RETRY_URL }}
+              run: |
+                  if [ -z "$RETRY_URL" ]; then
+                    echo "JULES_RETRY_URL secret is not set" && exit 1
+                  fi
+                  echo "Triggering retry queue: $RETRY_URL"
+                  curl -fsSL --max-time 120 "$RETRY_URL" || echo "Retry endpoint call failed"
