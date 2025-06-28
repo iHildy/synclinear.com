@@ -19,6 +19,7 @@ import {
 } from "../../pages/api/utils";
 import got from "got";
 import { inviteMember } from "../linear";
+import { rewordIssueDescriptionForAI, isAiProcessed } from "../openai";
 import { components } from "@octokit/openapi-types";
 import { linearQuery } from "../apollo";
 import {
@@ -63,11 +64,17 @@ export async function linearWebhookHandler(
     }: LinearWebhookPayload = body;
 
     // Log specific event details
-    console.log(`[DEBUG] Processing Linear webhook: ${action} ${actionType} for ${data.team?.key}-${data.number}`);
-    
+    console.log(
+        `[DEBUG] Processing Linear webhook: ${action} ${actionType} for ${data.team?.key}-${data.number}`
+    );
+
     // Add logging before syncs lookup
-    console.log(`[DEBUG] Looking for syncs with linearUserId: ${data.userId ?? data.creatorId}`);
-    
+    console.log(
+        `[DEBUG] Looking for syncs with linearUserId: ${
+            data.userId ?? data.creatorId
+        }`
+    );
+
     const syncs = await prisma.sync.findMany({
         where: {
             linearUserId: data.userId ?? data.creatorId
@@ -82,7 +89,11 @@ export async function linearWebhookHandler(
 
     // Add more detailed logging for syncs
     syncs.forEach((s, i) => {
-        console.log(`[DEBUG] Sync ${i+1}: teamId=${s.linearTeamId}, repoId=${s.githubRepoId}`);
+        console.log(
+            `[DEBUG] Sync ${i + 1}: teamId=${s.linearTeamId}, repoId=${
+                s.githubRepoId
+            }`
+        );
     });
 
     const sync = syncs.find(s => {
@@ -133,6 +144,7 @@ export async function linearWebhookHandler(
     });
 
     const ticketName = `${data.team?.key ?? ""}-${data.number}`;
+    let rewordedDescriptionForLinear: string | undefined;
 
     const githubKey = process.env.GITHUB_API_KEY
         ? process.env.GITHUB_API_KEY
@@ -156,8 +168,10 @@ export async function linearWebhookHandler(
     );
 
     // Add logging for syncedIssue search
-    console.log(`[DEBUG] Checking for existing synced issue: linearIssueId=${data.id}, linearTeamId=${data.teamId}`);
-    
+    console.log(
+        `[DEBUG] Checking for existing synced issue: linearIssueId=${data.id}, linearTeamId=${data.teamId}`
+    );
+
     const syncedIssue = await prisma.syncedIssue.findFirst({
         where: {
             linearIssueId: data.id,
@@ -165,10 +179,12 @@ export async function linearWebhookHandler(
         },
         include: { GitHubRepo: true }
     });
-    
+
     console.log(`[DEBUG] Existing synced issue found: ${!!syncedIssue}`);
     if (syncedIssue) {
-        console.log(`[DEBUG] Existing issue details: githubIssueNumber=${syncedIssue.githubIssueNumber}, githubIssueId=${syncedIssue.githubIssueId}`);
+        console.log(
+            `[DEBUG] Existing issue details: githubIssueNumber=${syncedIssue.githubIssueNumber}, githubIssueId=${syncedIssue.githubIssueId}`
+        );
     }
 
     if (action === "update") {
@@ -277,6 +293,7 @@ export async function linearWebhookHandler(
             }
 
             let markdown = data.description;
+            let rewordedDescriptionForLinear: string | null = null; // To store reworded description for Linear update
 
             // Re-fetching the issue description returns it with public image URLs
             if (markdown?.match(GENERAL.INLINE_IMG_TAG_REGEX)) {
@@ -286,10 +303,35 @@ export async function linearWebhookHandler(
                 }
             }
 
-            const modifiedDescription = await prepareMarkdownContent(
+            let modifiedDescription = await prepareMarkdownContent(
                 markdown,
                 "linear"
             );
+
+            // Reword description if it's a new issue and not already processed by AI
+            if (modifiedDescription && !isAiProcessed(modifiedDescription)) {
+                console.log(
+                    `[OpenAI] New issue ${ticketName}, attempting to reword description.`
+                );
+                const reworded = await rewordIssueDescriptionForAI(
+                    modifiedDescription
+                );
+                if (reworded) {
+                    modifiedDescription = reworded; // Use reworded for GitHub
+                    rewordedDescriptionForLinear = reworded; // Mark for Linear update later
+                    console.log(
+                        `[OpenAI] Description for ${ticketName} reworded.`
+                    );
+                } else {
+                    console.log(
+                        `[OpenAI] Description for ${ticketName} not reworded (either null response or error).`
+                    );
+                }
+            } else if (isAiProcessed(modifiedDescription)) {
+                console.log(
+                    `[OpenAI] New issue ${ticketName} description already AI processed. Skipping rewording.`
+                );
+            }
 
             const assignee = await prisma.user.findFirst({
                 where: { linearUserId: data.assigneeId },
@@ -335,6 +377,26 @@ export async function linearWebhookHandler(
 
             const linearIssue = await linear.issue(data.id);
 
+            // If the description was reworded for a new issue, update the original Linear issue as well
+            if (rewordedDescriptionForLinear) {
+                console.log(
+                    `[OpenAI] Updating Linear issue ${ticketName} with reworded description.`
+                );
+                try {
+                    await linear.updateIssue(data.id, {
+                        description: rewordedDescriptionForLinear
+                    });
+                    console.log(
+                        `[OpenAI] Successfully updated Linear issue ${ticketName} with reworded description.`
+                    );
+                } catch (e) {
+                    console.error(
+                        `[OpenAI] Failed to update Linear issue ${ticketName} with reworded description:`,
+                        e
+                    );
+                }
+            }
+
             const attachmentQuery = getAttachmentQuery(
                 data.id,
                 createdIssueData.number,
@@ -342,14 +404,20 @@ export async function linearWebhookHandler(
             );
 
             // When creating GitHub issue
-            console.log(`[DEBUG] Creating GitHub issue for Linear issue ${data.team?.key}-${data.number}`);
-            
+            console.log(
+                `[DEBUG] Creating GitHub issue for Linear issue ${data.team?.key}-${data.number}`
+            );
+
             // After GitHub issue creation
-            console.log(`[DEBUG] GitHub issue created with status: ${createdIssueResponse.statusCode}, id: ${createdIssueData.id}, number: ${createdIssueData.number}`);
-            
+            console.log(
+                `[DEBUG] GitHub issue created with status: ${createdIssueResponse.statusCode}, id: ${createdIssueData.id}, number: ${createdIssueData.number}`
+            );
+
             // Before database write
-            console.log(`[DEBUG] About to create syncedIssue record in database`);
-            
+            console.log(
+                `[DEBUG] About to create syncedIssue record in database`
+            );
+
             // When writing to database table
             try {
                 await Promise.all([
@@ -366,21 +434,27 @@ export async function linearWebhookHandler(
                             );
                         }
                     }),
-                    prisma.syncedIssue.create({
-                        data: {
-                            githubIssueId: createdIssueData.id,
-                            linearIssueId: data.id,
-                            linearTeamId: data.teamId,
-                            githubIssueNumber: createdIssueData.number,
-                            linearIssueNumber: data.number,
-                            githubRepoId: repoId
-                        }
-                    }).then(() => {
-                        console.log(`[INFO] Successfully created syncedIssue record in database`);
-                    })
+                    prisma.syncedIssue
+                        .create({
+                            data: {
+                                githubIssueId: createdIssueData.id,
+                                linearIssueId: data.id,
+                                linearTeamId: data.teamId,
+                                githubIssueNumber: createdIssueData.number,
+                                linearIssueNumber: data.number,
+                                githubRepoId: repoId
+                            }
+                        })
+                        .then(() => {
+                            console.log(
+                                `[INFO] Successfully created syncedIssue record in database`
+                            );
+                        })
                 ] as Promise<void>[]);
             } catch (error) {
-                console.log(`[ERROR] Failed to create syncedIssue record: ${error.message}`);
+                console.log(
+                    `[ERROR] Failed to create syncedIssue record: ${error.message}`
+                );
                 console.log(`[ERROR] Stack trace: ${error.stack}`);
                 throw error;
             }
@@ -542,8 +616,37 @@ export async function linearWebhookHandler(
 
         // Description change
         if (updatedFrom.description && actionType === "Issue") {
-            let markdown = data.description;
+            let currentLinearDescription = data.description; // The incoming description from Linear event
+            let descriptionForGithubSync = currentLinearDescription; // This will be what's prepared for GitHub
+            let rewordedDescriptionForLinearSelfUpdate: string | null = null;
 
+            // Only reword if the new description doesn't already have the AI marker (i.e., it's a human edit)
+            if (!isAiProcessed(currentLinearDescription)) {
+                console.log(
+                    `[OpenAI] Description for ${ticketName} (update) changed by human, attempting to reword.`
+                );
+                const reworded = await rewordIssueDescriptionForAI(
+                    currentLinearDescription
+                );
+                if (reworded) {
+                    descriptionForGithubSync = reworded;
+                    rewordedDescriptionForLinearSelfUpdate = reworded; // Mark to update Linear issue itself
+                    console.log(
+                        `[OpenAI] Description for ${ticketName} (update) reworded.`
+                    );
+                } else {
+                    console.log(
+                        `[OpenAI] Description for ${ticketName} (update) not reworded (OpenAI returned null or error).`
+                    );
+                }
+            } else {
+                console.log(
+                    `[OpenAI] Description for ${ticketName} (update) already AI processed or change is from sync. Using current description for GitHub sync.`
+                );
+            }
+
+            // Fetch public image URLs for the description that will be synced to GitHub
+            let markdown = descriptionForGithubSync;
             if (markdown?.match(GENERAL.INLINE_IMG_TAG_REGEX)) {
                 const publicIssue = await linear.issue(data.id);
                 if (publicIssue?.description) {
@@ -551,10 +654,35 @@ export async function linearWebhookHandler(
                 }
             }
 
-            const modifiedDescription = await prepareMarkdownContent(
+            let modifiedDescription = await prepareMarkdownContent(
                 markdown,
                 "linear"
             );
+
+            // Reword description if it's a new issue and not already processed by AI
+            if (modifiedDescription && !isAiProcessed(modifiedDescription)) {
+                console.log(
+                    `[OpenAI] New issue ${ticketName}, attempting to reword description.`
+                );
+                const reworded = await rewordIssueDescriptionForAI(
+                    modifiedDescription
+                );
+                if (reworded) {
+                    modifiedDescription = reworded; // Use reworded for GitHub
+                    rewordedDescriptionForLinear = reworded; // Mark for Linear update later
+                    console.log(
+                        `[OpenAI] Description for ${ticketName} reworded.`
+                    );
+                } else {
+                    console.log(
+                        `[OpenAI] Description for ${ticketName} not reworded (either null response or error).`
+                    );
+                }
+            } else if (isAiProcessed(modifiedDescription)) {
+                console.log(
+                    `[OpenAI] New issue ${ticketName} description already AI processed. Skipping rewording.`
+                );
+            }
 
             const updatedIssueResponse = await got.patch(
                 `${GITHUB.REPO_ENDPOINT}/${syncedIssue.GitHubRepo.repoName}/issues/${syncedIssue.githubIssueNumber}`,
@@ -581,6 +709,26 @@ export async function linearWebhookHandler(
                 console.log(
                     `Updated GH issue desc for ${data.id} on ${syncedIssue.githubIssueId}`
                 );
+            }
+
+            // If the description was reworded due to a human update, update the Linear issue itself
+            if (rewordedDescriptionForLinearSelfUpdate) {
+                console.log(
+                    `[OpenAI] Updating Linear issue ${ticketName} (description update) with reworded content.`
+                );
+                try {
+                    await linear.updateIssue(data.id, {
+                        description: rewordedDescriptionForLinearSelfUpdate
+                    });
+                    console.log(
+                        `[OpenAI] Successfully updated Linear issue ${ticketName} (description update) with reworded content.`
+                    );
+                } catch (e) {
+                    console.error(
+                        `[OpenAI] Failed to update Linear issue ${ticketName} (description update) with reworded content:`,
+                        e
+                    );
+                }
             }
         }
 
@@ -1051,6 +1199,7 @@ export async function linearWebhookHandler(
             }
 
             let markdown = data.description;
+            let rewordedDescriptionForLinear: string | null = null; // To store reworded description for Linear update
 
             if (markdown?.match(GENERAL.INLINE_IMG_TAG_REGEX)) {
                 const publicIssue = await linear.issue(data.id);
@@ -1059,10 +1208,35 @@ export async function linearWebhookHandler(
                 }
             }
 
-            const modifiedDescription = await prepareMarkdownContent(
+            let modifiedDescription = await prepareMarkdownContent(
                 markdown,
                 "linear"
             );
+
+            // Reword description if it's a new issue and not already processed by AI
+            if (modifiedDescription && !isAiProcessed(modifiedDescription)) {
+                console.log(
+                    `[OpenAI] New issue ${ticketName}, attempting to reword description.`
+                );
+                const reworded = await rewordIssueDescriptionForAI(
+                    modifiedDescription
+                );
+                if (reworded) {
+                    modifiedDescription = reworded; // Use reworded for GitHub
+                    rewordedDescriptionForLinear = reworded; // Mark for Linear update later
+                    console.log(
+                        `[OpenAI] Description for ${ticketName} reworded.`
+                    );
+                } else {
+                    console.log(
+                        `[OpenAI] Description for ${ticketName} not reworded (either null response or error).`
+                    );
+                }
+            } else if (isAiProcessed(modifiedDescription)) {
+                console.log(
+                    `[OpenAI] New issue ${ticketName} description already AI processed. Skipping rewording.`
+                );
+            }
 
             const assignee = await prisma.user.findFirst({
                 where: { linearUserId: data.assigneeId },
@@ -1212,5 +1386,7 @@ export async function linearWebhookHandler(
     }
 
     // Add logs for the end of processing
-    console.log(`[DEBUG] Completed processing Linear webhook: ${action} ${actionType} for ${data.team?.key}-${data.number}`);
+    console.log(
+        `[DEBUG] Completed processing Linear webhook: ${action} ${actionType} for ${data.team?.key}-${data.number}`
+    );
 }

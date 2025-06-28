@@ -30,6 +30,7 @@ import got from "got";
 import { linearQuery } from "../apollo";
 import { ApiError } from "../errors";
 import { fetchCommentHtml, extractImagesFromHtml } from "../github";
+import { rewordIssueDescriptionForAI, AI_PROCESSED_MARKER } from "../openai";
 
 export async function githubWebhookHandler(
     body: IssuesEvent | IssueCommentCreatedEvent | MilestoneEvent,
@@ -210,39 +211,68 @@ export async function githubWebhookHandler(
             }
 
             if (!syncedIssue) return skipReason("comment", issue.number);
-            
+
             // Add this code to handle private images
             let processedCommentBody = comment.body;
-            
+
             // Check if comment potentially has images
-            if (comment.body.includes('![') || comment.body.includes('<img')) {
-                console.log(`[Image Processing] Detected potential images in comment ${comment.id}`);
-                
+            if (comment.body.includes("![") || comment.body.includes("<img")) {
+                console.log(
+                    `[Image Processing] Detected potential images in comment ${comment.id}`
+                );
+
                 // Fetch the HTML version of the comment for proper image URLs
-                console.log(`[Image Processing] Fetching HTML content for comment node_id: ${comment.node_id}`);
-                const commentHtml = await fetchCommentHtml(comment.node_id, githubKey);
-                
+                console.log(
+                    `[Image Processing] Fetching HTML content for comment node_id: ${comment.node_id}`
+                );
+                const commentHtml = await fetchCommentHtml(
+                    comment.node_id,
+                    githubKey
+                );
+
                 if (commentHtml) {
-                    console.log(`[Image Processing] Received HTML response (length: ${commentHtml.length})`);
-                    console.log(`[Image Processing] HTML snippet: ${commentHtml.substring(0, 200)}...`);
-                    
+                    console.log(
+                        `[Image Processing] Received HTML response (length: ${commentHtml.length})`
+                    );
+                    console.log(
+                        `[Image Processing] HTML snippet: ${commentHtml.substring(
+                            0,
+                            200
+                        )}...`
+                    );
+
                     const imageUrls = extractImagesFromHtml(commentHtml);
-                    console.log(`[Image Processing] Extracted ${imageUrls.length} image URLs from HTML`);
-                    imageUrls.forEach((url, i) => console.log(`[Image Processing] Image ${i+1}: ${url.substring(0, 100)}...`));
-                    
+                    console.log(
+                        `[Image Processing] Extracted ${imageUrls.length} image URLs from HTML`
+                    );
+                    imageUrls.forEach((url, i) =>
+                        console.log(
+                            `[Image Processing] Image ${i + 1}: ${url.substring(
+                                0,
+                                100
+                            )}...`
+                        )
+                    );
+
                     // Replace image references with the authenticated URLs
-                    console.log(`[Image Processing] Original comment body length: ${processedCommentBody.length}`);
-                    
+                    console.log(
+                        `[Image Processing] Original comment body length: ${processedCommentBody.length}`
+                    );
+
                     // This is a simple approach; you might need more sophisticated regex matching
                     let imgIndex = 0;
                     processedCommentBody = processedCommentBody.replace(
                         /!\[.*?\]\(.*?\)|<img[^>]*>/g,
                         () => `![image](${imageUrls[imgIndex++]})`
                     );
-                    
-                    console.log(`[Image Processing] Modified comment body length: ${processedCommentBody.length}`);
+
+                    console.log(
+                        `[Image Processing] Modified comment body length: ${processedCommentBody.length}`
+                    );
                 } else {
-                    console.log(`[Image Processing] Failed to fetch HTML content for comment ${comment.id}`);
+                    console.log(
+                        `[Image Processing] Failed to fetch HTML content for comment ${comment.id}`
+                    );
                 }
             }
 
@@ -268,22 +298,98 @@ export async function githubWebhookHandler(
 
         if (!syncedIssue) return skipReason("edit", issue.number);
 
-        const title = issue.title.split(`${syncedIssue.linearIssueNumber}]`);
-        if (title.length > 1) title.shift();
+        const titleParts = issue.title.split(
+            `${syncedIssue.linearIssueNumber}]`
+        );
+        if (titleParts.length > 1) titleParts.shift();
+        const newTitle = titleParts.join(`${syncedIssue.linearIssueNumber}]`);
 
-        const description = issue.body?.split("<sub>");
+        const incomingGithubBody = issue.body ?? "";
 
-        if ((description?.length || 0) > 1) description?.pop();
+        const footerRegex = /<sub.*?<\/sub>\s*$/s;
+        let descriptionWithoutFooter = incomingGithubBody
+            .replace(footerRegex, "")
+            .trim();
+        const originalFooterMatch = incomingGithubBody.match(footerRegex);
+        const originalFooter = originalFooterMatch
+            ? originalFooterMatch[0]
+            : "";
 
-        const modifiedDescription = await prepareMarkdownContent(
-            description?.join("<sub>"),
+        let descriptionForLinear = descriptionWithoutFooter;
+        let finalDescriptionForGithub = incomingGithubBody;
+
+        if (
+            sender.type !== "Bot" &&
+            !descriptionWithoutFooter.includes(AI_PROCESSED_MARKER)
+        ) {
+            console.log(
+                `[AI Reword] Issue ${
+                    issue.number
+                } edited by human, no marker. Attempting reword for: "${descriptionWithoutFooter.substring(
+                    0,
+                    50
+                )}..."`
+            );
+            const rewordedDescription = await rewordIssueDescriptionForAI(
+                descriptionWithoutFooter
+            );
+            if (rewordedDescription) {
+                console.log(
+                    `[AI Reword] Issue ${issue.number} reworded successfully.`
+                );
+                descriptionForLinear = rewordedDescription;
+
+                finalDescriptionForGithub = `${rewordedDescription}${
+                    originalFooter ? `\n\n${originalFooter}` : ""
+                }`.trim();
+
+                console.log(
+                    `[GitHub Update] Patching issue ${issue.number} with reworded body (length: ${finalDescriptionForGithub.length}).`
+                );
+                await got
+                    .patch(`${issuesEndpoint}/${issue.number}`, {
+                        json: {
+                            body: finalDescriptionForGithub
+                        },
+                        ...defaultHeaders
+                    })
+                    .catch(e =>
+                        console.error(
+                            `[GitHub Update Error] Failed to update issue ${issue.number} body after AI reword:`,
+                            e.message
+                        )
+                    );
+            } else {
+                console.log(
+                    `[AI Reword] Issue ${
+                        issue.number
+                    } not reworded (null from AI or already processed). Description was: "${descriptionWithoutFooter.substring(
+                        0,
+                        50
+                    )}..."`
+                );
+            }
+        } else {
+            console.log(
+                `[AI Reword] Skipping reword for issue ${
+                    issue.number
+                }. Sender: ${
+                    sender.type
+                }, Marker present: ${descriptionWithoutFooter.includes(
+                    AI_PROCESSED_MARKER
+                )}`
+            );
+        }
+
+        const modifiedDescriptionForLinear = await prepareMarkdownContent(
+            descriptionForLinear,
             "github"
         );
 
         await linear
             .updateIssue(syncedIssue.linearIssueId, {
-                title: title.join(`${syncedIssue.linearIssueNumber}]`),
-                description: modifiedDescription
+                title: newTitle,
+                description: modifiedDescriptionForLinear
             })
             .then(updatedIssue => {
                 updatedIssue.issue?.then(updatedIssueData => {
@@ -344,8 +450,55 @@ export async function githubWebhookHandler(
             return `Skipping creation as issue ${issue.number}'s title seems to contain a Linear ticket ID.`;
         }
 
-        const modifiedDescription = await prepareMarkdownContent(
-            issue.body,
+        let issueBodyFromWebhook = issue.body ?? "";
+        let descriptionForLinear = issueBodyFromWebhook;
+        let finalDescriptionForGithubUpdate = issueBodyFromWebhook;
+
+        if (
+            sender.type !== "Bot" &&
+            !issueBodyFromWebhook.includes(AI_PROCESSED_MARKER)
+        ) {
+            console.log(
+                `[AI Reword] New issue ${
+                    issue.number
+                } by human, no marker. Attempting reword for: "${issueBodyFromWebhook.substring(
+                    0,
+                    50
+                )}..."`
+            );
+            const rewordedDescription = await rewordIssueDescriptionForAI(
+                issueBodyFromWebhook
+            );
+            if (rewordedDescription) {
+                console.log(
+                    `[AI Reword] New issue ${issue.number} reworded successfully.`
+                );
+                descriptionForLinear = rewordedDescription;
+                finalDescriptionForGithubUpdate = rewordedDescription;
+            } else {
+                console.log(
+                    `[AI Reword] New issue ${
+                        issue.number
+                    } not reworded. Description was: "${issueBodyFromWebhook.substring(
+                        0,
+                        50
+                    )}..."`
+                );
+            }
+        } else {
+            console.log(
+                `[AI Reword] Skipping reword for new issue ${
+                    issue.number
+                }. Sender: ${
+                    sender.type
+                }, Marker present: ${issueBodyFromWebhook.includes(
+                    AI_PROCESSED_MARKER
+                )}`
+            );
+        }
+
+        const modifiedDescriptionForLinear = await prepareMarkdownContent(
+            descriptionForLinear,
             "github",
             {
                 anonymous: anonymousUser,
@@ -378,7 +531,7 @@ export async function githubWebhookHandler(
         const createdIssueData = await linear.createIssue({
             id: generateLinearUUID(),
             title: issue.title,
-            description: `${modifiedDescription ?? ""}`,
+            description: `${modifiedDescriptionForLinear ?? ""}`,
             teamId: linearTeamId,
             labelIds: [
                 ...linearLabels?.nodes?.map(node => node.id),
@@ -434,7 +587,7 @@ export async function githubWebhookHandler(
                     got.patch(`${issuesEndpoint}/${issue.number}`, {
                         json: {
                             title: `[${ticketName}] ${issue.title}`,
-                            body: `${issue.body}\n\n<sub>[${ticketName}](${createdIssue.url})</sub>`
+                            body: `${finalDescriptionForGithubUpdate}\n\n<sub>[${ticketName}](${createdIssue.url})</sub>`
                         },
                         ...defaultHeaders
                     }),

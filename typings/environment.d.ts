@@ -16,6 +16,7 @@ declare global {
             GITHUB_REPO: string;
 
             DATABASE_URL: string;
+            OPENAI_API_KEY: string;
         }
     }
 }
