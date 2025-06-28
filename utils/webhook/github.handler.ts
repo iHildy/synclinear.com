@@ -445,11 +445,10 @@ export async function githubWebhookHandler(
                 });
             });
     } else if (
-        action === "opened" ||
-        (action === "labeled" &&
-            body.label?.name?.toLowerCase() === LINEAR.GITHUB_LABEL)
+        action === "labeled" &&
+        body.label?.name?.toLowerCase() === LINEAR.GITHUB_LABEL
     ) {
-        // Issue opened or special "linear" label added
+        // Issue with special "linear" label added
 
         if (syncedIssue) {
             return `Not creating: ${issue?.id || ""} exists as ${
