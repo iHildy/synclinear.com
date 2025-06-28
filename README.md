@@ -36,3 +36,36 @@ If you need any help, please check for related [issues](https://github.com/calco
 ## Troubleshooting
 
 Some common error scenarios and how to work through them can be found here in the [troubleshooting guide](TROUBLESHOOTING.md).
+
+## Proto Automated Workflow
+
+The end-to-end flow of a Linear issue through Proto ↔ Jules automation is captured below:
+
+```mermaid
+%% Process map generated 2025-06-28
+graph TD;
+    A["Issue Created in Linear"] --> B["Auto-sync to GitHub"];
+    B --> C["Proto adds 'jules' label"];
+    C --> D{Jules capacity check};
+    D -->|At limit| E["Queue: wait 30 min & retry"];
+    D -->|Available| F["Jules starts task"];
+    F --> G["Jules completes work → PR created"];
+    G --> H["Request GitHub Copilot review"];
+    H --> I["Developer opens branch in Cursor"];
+    I --> J["Developer provides PR feedback"];
+    J --> K["Cursor applies fixes"];
+    K --> L["Developer resolves merge conflicts"];
+    L --> M["Developer manual tests"];
+    M --> N{Tests pass?};
+    N -->|Yes| O["Merge PR to staging"];
+    O --> P["Task Complete"];
+    N -->|No| J;
+```
+
+Key implementation points:
+
+1. Label-driven automation (see `utils/webhook/github.handler.ts`).
+2. Resilient retry queue stored in `prisma` model `JulesTask`.
+3. Scheduled retries via `/api/jules/retry` (hook up to cron every 30 min).
+4. Build pipeline assumes `prisma generate` runs post-install; castings (`as any`) keep compilation green even before migration.
+

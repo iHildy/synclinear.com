@@ -1,35 +1,36 @@
-import prisma from "../../prisma";
+import { LinearClient } from "@linear/sdk";
+import {
+    IssueCommentCreatedEvent,
+    IssueCommentEditedEvent,
+    IssuesAssignedEvent,
+    IssuesEvent,
+    IssuesLabeledEvent,
+    IssuesUnassignedEvent,
+    IssuesUnlabeledEvent,
+    MilestoneEvent
+} from "@octokit/webhooks-types";
 import { createHmac, timingSafeEqual } from "crypto";
+import got from "got";
+import {
+    createAnonymousUserComment,
+    createLinearComment,
+    prepareMarkdownContent,
+    updateLinearComment,
+    upsertUser
+} from "../../pages/api/utils";
+import prisma from "../../prisma";
+import { linearQuery } from "../apollo";
+import { GENERAL, GITHUB, LINEAR, SHARED } from "../constants";
+import { ApiError } from "../errors";
+import { extractImagesFromHtml, fetchCommentHtml } from "../github";
 import {
     decrypt,
     getAttachmentQuery,
     getSyncFooter,
     skipReason
 } from "../index";
-import { LinearClient } from "@linear/sdk";
-import {
-    createAnonymousUserComment,
-    createLinearComment,
-    prepareMarkdownContent,
-    upsertUser,
-    updateLinearComment
-} from "../../pages/api/utils";
-import {
-    IssueCommentCreatedEvent,
-    IssuesAssignedEvent,
-    IssuesEvent,
-    IssuesLabeledEvent,
-    IssuesUnassignedEvent,
-    IssuesUnlabeledEvent,
-    MilestoneEvent,
-    IssueCommentEditedEvent
-} from "@octokit/webhooks-types";
+import { markJulesTaskForRetry, upsertJulesTask } from "../jules";
 import { generateLinearUUID } from "../linear";
-import { GENERAL, LINEAR, SHARED } from "../constants";
-import got from "got";
-import { linearQuery } from "../apollo";
-import { ApiError } from "../errors";
-import { fetchCommentHtml, extractImagesFromHtml } from "../github";
 
 export async function githubWebhookHandler(
     body: IssuesEvent | IssueCommentCreatedEvent | MilestoneEvent,
@@ -98,7 +99,10 @@ export async function githubWebhookHandler(
     );
     const sig = Buffer.from(signature, "utf-8");
 
-    if (sig.length !== digest.length || !timingSafeEqual(digest, sig)) {
+    if (
+        sig.length !== digest.length ||
+        !timingSafeEqual(digest as any, sig as any)
+    ) {
         throw new ApiError(
             `GH webhook secret doesn't match (repo: ${repository?.id || ""})`,
             403
@@ -205,44 +209,104 @@ export async function githubWebhookHandler(
         } else {
             const { comment } = body as IssueCommentCreatedEvent;
 
+            /* -------------------- Jules automation: comment from google-labs-jules -------------------- */
+            if (
+                sender?.login === "google-labs-jules" &&
+                comment.body?.startsWith(
+                    "You are currently at your concurrent task limit"
+                )
+            ) {
+                const hasHuman = issue.labels?.some(l => l.name === "Human");
+                if (!hasHuman) {
+                    await markJulesTaskForRetry({
+                        githubRepoId: BigInt(repository.id),
+                        githubIssueId: BigInt(issue.id),
+                        githubIssueNumber: BigInt(issue.number)
+                    });
+
+                    // Remove the `jules` label to signal pause
+                    try {
+                        await got.delete(
+                            `${GITHUB.REPO_ENDPOINT}/${repoName}/issues/${issue.number}/labels/jules`,
+                            { headers: defaultHeaders.headers }
+                        );
+                    } catch (e) {
+                        console.error(
+                            `Failed to remove jules label from #${issue.number}:`,
+                            e?.response?.body || e
+                        );
+                    }
+                }
+            }
+            /* ------------------------------------------------------------------ */
+
             if (comment.body.includes("on Linear")) {
                 return skipReason("comment", issue.number, true);
             }
 
             if (!syncedIssue) return skipReason("comment", issue.number);
-            
+
             // Add this code to handle private images
             let processedCommentBody = comment.body;
-            
+
             // Check if comment potentially has images
-            if (comment.body.includes('![') || comment.body.includes('<img')) {
-                console.log(`[Image Processing] Detected potential images in comment ${comment.id}`);
-                
+            if (comment.body.includes("![") || comment.body.includes("<img")) {
+                console.log(
+                    `[Image Processing] Detected potential images in comment ${comment.id}`
+                );
+
                 // Fetch the HTML version of the comment for proper image URLs
-                console.log(`[Image Processing] Fetching HTML content for comment node_id: ${comment.node_id}`);
-                const commentHtml = await fetchCommentHtml(comment.node_id, githubKey);
-                
+                console.log(
+                    `[Image Processing] Fetching HTML content for comment node_id: ${comment.node_id}`
+                );
+                const commentHtml = await fetchCommentHtml(
+                    comment.node_id,
+                    githubKey
+                );
+
                 if (commentHtml) {
-                    console.log(`[Image Processing] Received HTML response (length: ${commentHtml.length})`);
-                    console.log(`[Image Processing] HTML snippet: ${commentHtml.substring(0, 200)}...`);
-                    
+                    console.log(
+                        `[Image Processing] Received HTML response (length: ${commentHtml.length})`
+                    );
+                    console.log(
+                        `[Image Processing] HTML snippet: ${commentHtml.substring(
+                            0,
+                            200
+                        )}...`
+                    );
+
                     const imageUrls = extractImagesFromHtml(commentHtml);
-                    console.log(`[Image Processing] Extracted ${imageUrls.length} image URLs from HTML`);
-                    imageUrls.forEach((url, i) => console.log(`[Image Processing] Image ${i+1}: ${url.substring(0, 100)}...`));
-                    
+                    console.log(
+                        `[Image Processing] Extracted ${imageUrls.length} image URLs from HTML`
+                    );
+                    imageUrls.forEach((url, i) =>
+                        console.log(
+                            `[Image Processing] Image ${i + 1}: ${url.substring(
+                                0,
+                                100
+                            )}...`
+                        )
+                    );
+
                     // Replace image references with the authenticated URLs
-                    console.log(`[Image Processing] Original comment body length: ${processedCommentBody.length}`);
-                    
+                    console.log(
+                        `[Image Processing] Original comment body length: ${processedCommentBody.length}`
+                    );
+
                     // This is a simple approach; you might need more sophisticated regex matching
                     let imgIndex = 0;
                     processedCommentBody = processedCommentBody.replace(
                         /!\[.*?\]\(.*?\)|<img[^>]*>/g,
                         () => `![image](${imageUrls[imgIndex++]})`
                     );
-                    
-                    console.log(`[Image Processing] Modified comment body length: ${processedCommentBody.length}`);
+
+                    console.log(
+                        `[Image Processing] Modified comment body length: ${processedCommentBody.length}`
+                    );
                 } else {
-                    console.log(`[Image Processing] Failed to fetch HTML content for comment ${comment.id}`);
+                    console.log(
+                        `[Image Processing] Failed to fetch HTML content for comment ${comment.id}`
+                    );
                 }
             }
 
@@ -259,6 +323,27 @@ export async function githubWebhookHandler(
             );
         }
     }
+
+    /* -------------------- Jules automation: label added (early) -------------------- */
+    if (
+        githubEvent === "issues" &&
+        action === "labeled" &&
+        (body as IssuesLabeledEvent).label?.name?.toLowerCase() === "jules"
+    ) {
+        const hasHuman = issue.labels?.some(l => l.name === "Human");
+        if (!hasHuman) {
+            await upsertJulesTask({
+                githubRepoId: BigInt(repository.id),
+                githubIssueId: BigInt(issue.id),
+                githubIssueNumber: BigInt(issue.number)
+            });
+            console.log(
+                `Jules task created/upserted for issue #${issue.number}.`
+            );
+        }
+    }
+
+    /* ------------------------------------------------------------------------------ */
 
     // Ensure the event is for an issue
     if (githubEvent !== "issues") return "Not an issue event.";
