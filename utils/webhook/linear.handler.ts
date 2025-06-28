@@ -186,6 +186,75 @@ export async function linearWebhookHandler(
     }
 
     if (action === "update") {
+        // Ensure issue exists in GitHub. If not yet synced, create it now (works when a label like "jules" is added after creation)
+
+        if (!syncedIssue && actionType === "Issue") {
+            if (data.id?.includes(GITHUB.UUID_SUFFIX)) {
+                console.log(skipReason("issue", data.id, true));
+            } else {
+                try {
+                    let markdown = data.description;
+
+                    if (markdown?.match(GENERAL.INLINE_IMG_TAG_REGEX)) {
+                        const publicIssue = await linear.issue(data.id);
+                        if (publicIssue?.description) {
+                            markdown = publicIssue.description;
+                        }
+                    }
+
+                    const modifiedDescription = await prepareMarkdownContent(
+                        markdown,
+                        "linear"
+                    );
+
+                    const assignee = await prisma.user.findFirst({
+                        where: { linearUserId: data.assigneeId },
+                        select: { githubUsername: true }
+                    });
+
+                    const createRes = await got.post(issuesEndpoint, {
+                        headers: defaultHeaders,
+                        json: {
+                            title: `[${ticketName}] ${data.title}`,
+                            body: `${
+                                modifiedDescription ?? ""
+                            }\n\n<sub>${getSyncFooter()} | ${ticketName}</sub>`,
+                            ...(data.assigneeId &&
+                                assignee?.githubUsername && {
+                                    assignees: [assignee.githubUsername]
+                                })
+                        }
+                    });
+
+                    if (createRes.statusCode > 201) {
+                        throw new ApiError(
+                            `Failed to create GH issue for ${data.id}`,
+                            500
+                        );
+                    }
+
+                    const ghIssue = JSON.parse(createRes.body);
+
+                    await prisma.syncedIssue.create({
+                        data: {
+                            githubIssueId: ghIssue.id,
+                            linearIssueId: data.id,
+                            linearTeamId: data.teamId,
+                            githubIssueNumber: ghIssue.number,
+                            linearIssueNumber: data.number,
+                            githubRepoId: repoId
+                        }
+                    });
+
+                    console.log(
+                        `Created GitHub issue #${ghIssue.number} from Linear update ${ticketName}.`
+                    );
+                } catch (err) {
+                    console.error("Error auto-syncing issue on update", err);
+                }
+            }
+        }
+
         // Label updated on an already-synced issue
         if (syncedIssue) {
             // Label(s) removed
@@ -311,7 +380,7 @@ export async function linearWebhookHandler(
                     title: `[${ticketName}] ${data.title}`,
                     body: `${
                         modifiedDescription ?? ""
-                    }\n\n<sub>${getSyncFooter()} | [${ticketName}](${url})</sub>`,
+                    }\n\n<sub>${getSyncFooter()} | ${ticketName}</sub>`,
                     ...(data.assigneeId &&
                         assignee?.githubUsername && {
                             assignees: [assignee?.githubUsername]
@@ -584,7 +653,7 @@ export async function linearWebhookHandler(
                     json: {
                         body: `${
                             modifiedDescription ?? ""
-                        }\n\n<sub>${getSyncFooter()} | [${ticketName}](${url})</sub>`
+                        }\n\n<sub>${getSyncFooter()} | ${ticketName}</sub>`
                     }
                 }
             );
@@ -1090,7 +1159,7 @@ export async function linearWebhookHandler(
                     title: `[${ticketName}] ${data.title}`,
                     body: `${
                         modifiedDescription ?? ""
-                    }\n\n<sub>${getSyncFooter()} | [${ticketName}](${url})</sub>`,
+                    }\n\n<sub>${getSyncFooter()} | ${ticketName}</sub>`,
                     ...(data.assigneeId &&
                         assignee?.githubUsername && {
                             assignees: [assignee?.githubUsername]
