@@ -69,3 +69,4 @@ Key implementation points:
 3. Scheduled retries via `/api/jules/retry` (hook up to cron every 30 min).
 4. Build pipeline assumes `prisma generate` runs post-install; castings (`as any`) keep compilation green even before migration.
 
+# Hello from Jules!
