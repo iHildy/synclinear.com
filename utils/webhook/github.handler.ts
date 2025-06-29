@@ -117,6 +117,7 @@ export async function githubWebhookHandler(
         githubApiKey,
         githubApiKeyIV,
         LinearTeam: {
+            publicLabelId,
             doneStateId,
             toDoStateId,
             canceledStateId,
@@ -211,67 +212,28 @@ export async function githubWebhookHandler(
             /* -------------------- Jules automation: comment from google-labs-jules -------------------- */
             if (
                 sender?.login === "google-labs-jules" &&
-                comment.body?.includes(
+                comment.body?.startsWith(
                     "You are currently at your concurrent task limit"
                 )
             ) {
                 const hasHuman = issue.labels?.some(l => l.name === "Human");
-                console.log(
-                    `[Jules] Task limit comment detected for issue #${issue.number}, hasHuman: ${hasHuman}`
-                );
-
                 if (!hasHuman) {
+                    await markJulesTaskForRetry({
+                        githubRepoId: BigInt(repository.id),
+                        githubIssueId: BigInt(issue.id),
+                        githubIssueNumber: BigInt(issue.number)
+                    });
+
+                    // Remove the `jules` label to signal pause
                     try {
-                        console.log(
-                            `[Jules] Marking task for retry: issueId=${issue.id}, repoId=${repository.id}`
+                        await got.delete(
+                            `${GITHUB.REPO_ENDPOINT}/${repoName}/issues/${issue.number}/labels/jules`,
+                            { headers: defaultHeaders.headers }
                         );
-                        await markJulesTaskForRetry({
-                            githubRepoId: BigInt(repository.id),
-                            githubIssueId: BigInt(issue.id),
-                            githubIssueNumber: BigInt(issue.number)
-                        });
-                        console.log(
-                            `[Jules] Successfully marked task for retry: issue #${issue.number}`
-                        );
-
-                        // Remove the `jules` label and add `jules-queue` label
-                        try {
-                            await got.delete(
-                                `${GITHUB.REPO_ENDPOINT}/${repoName}/issues/${issue.number}/labels/jules`,
-                                { headers: defaultHeaders.headers }
-                            );
-                            console.log(
-                                `[Jules] Removed jules label from #${issue.number}`
-                            );
-                        } catch (e) {
-                            console.error(
-                                `[Jules] Failed to remove jules label from #${issue.number}:`,
-                                e?.response?.body || e
-                            );
-                        }
-
-                        // Add jules-queue label
-                        try {
-                            await got.post(
-                                `${GITHUB.REPO_ENDPOINT}/${repoName}/issues/${issue.number}/labels`,
-                                {
-                                    json: { labels: ["jules-queue"] },
-                                    headers: defaultHeaders.headers
-                                }
-                            );
-                            console.log(
-                                `[Jules] Added jules-queue label to #${issue.number}`
-                            );
-                        } catch (e) {
-                            console.error(
-                                `[Jules] Failed to add jules-queue label to #${issue.number}:`,
-                                e?.response?.body || e
-                            );
-                        }
                     } catch (e) {
                         console.error(
-                            `[Jules] Failed to mark task for retry on issue #${issue.number}:`,
-                            e
+                            `Failed to remove jules label from #${issue.number}:`,
+                            e?.response?.body || e
                         );
                     }
                 }
@@ -359,55 +321,6 @@ export async function githubWebhookHandler(
                 modifiedComment,
                 issue
             );
-
-            /* -------------------- Jules automation: In Progress status -------------------- */
-            if (
-                sender?.login === "google-labs-jules" &&
-                comment.body?.includes(
-                    "When finished, you will see another comment and be able to review a PR."
-                )
-            ) {
-                console.log(
-                    `[Jules] Agent started comment detected for issue #${issue.number}`
-                );
-                if (syncedIssue) {
-                    try {
-                        const states = await linear.workflowStates({
-                            filter: { team: { id: { eq: linearTeamId } } }
-                        });
-                        // Try "In Progress" first, then fallback to "Agent Started"
-                        const inProgressState = states.nodes.find(
-                            s => s.name.toLowerCase() === "in progress"
-                        );
-                        const agentState = states.nodes.find(
-                            s => s.name.toLowerCase() === "agent started"
-                        );
-                        const targetState = inProgressState || agentState;
-
-                        if (targetState) {
-                            await linear.updateIssue(
-                                syncedIssue.linearIssueId,
-                                {
-                                    stateId: targetState.id
-                                }
-                            );
-                            console.log(
-                                `[Jules] Set Linear issue ${syncedIssue.linearIssueId} state to ${targetState.name}.`
-                            );
-                        } else {
-                            console.warn(
-                                `[Jules] No "In Progress" or "Agent Started" state found for team ${linearTeamId}`
-                            );
-                        }
-                    } catch (err) {
-                        console.error(
-                            "[Jules] Failed to set In Progress/Agent Started state",
-                            err
-                        );
-                    }
-                }
-            }
-            /* ------------------------------------------------------------------------------ */
         }
     }
 
@@ -500,10 +413,11 @@ export async function githubWebhookHandler(
                 });
             });
     } else if (
-        action === "labeled" &&
-        body.label?.name?.toLowerCase() === LINEAR.GITHUB_LABEL
+        action === "opened" ||
+        (action === "labeled" &&
+            body.label?.name?.toLowerCase() === LINEAR.GITHUB_LABEL)
     ) {
-        // Issue with special "linear" label added
+        // Issue opened or special "linear" label added
 
         if (syncedIssue) {
             return `Not creating: ${issue?.id || ""} exists as ${
@@ -548,13 +462,13 @@ export async function githubWebhookHandler(
 
         const createdIssueData = await linear.createIssue({
             id: generateLinearUUID(),
-            teamId: linearTeamId,
             title: issue.title,
-            description: modifiedDescription,
-            ...(assignee?.linearUserId && {
-                assigneeId: assignee.linearUserId
-            }),
-            labelIds: linearLabels?.nodes?.map(node => node.id),
+            description: `${modifiedDescription ?? ""}`,
+            teamId: linearTeamId,
+            labelIds: [
+                ...linearLabels?.nodes?.map(node => node.id),
+                publicLabelId
+            ],
             ...(issue.assignee?.id &&
                 assignee && {
                     assigneeId: assignee.linearUserId
@@ -754,12 +668,9 @@ export async function githubWebhookHandler(
             const createdIssueData = await linear.createIssue({
                 id: generateLinearUUID(),
                 title: issue.title,
-                description: modifiedDescription,
+                description: `${modifiedDescription ?? ""}`,
                 teamId: linearTeamId,
-                labelIds: [],
-                ...(assignee?.linearUserId && {
-                    assigneeId: assignee.linearUserId
-                }),
+                labelIds: [publicLabelId],
                 ...(issue.assignee?.id &&
                     assignee && {
                         assigneeId: assignee.linearUserId

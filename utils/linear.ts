@@ -178,6 +178,23 @@ export const saveLinearContext = async (
     team: LinearTeam,
     stateLabels: { [key in TicketState]: LinearObject }
 ) => {
+    let publicLabel = team.labels?.nodes?.find?.(n => n.name === "Public");
+
+    if (!publicLabel) {
+        const { data } = await createLinearLabel(
+            token,
+            team.id,
+            "Public",
+            "#2DA54E"
+        );
+
+        if (!data?.issueLabelCreate?.issueLabel) {
+            alert('Please create a Linear label called "Public"');
+        }
+
+        publicLabel = data?.issueLabelCreate?.issueLabel;
+    }
+
     if (!stateLabels) {
         alert("Please select a label for each ticket state");
         return;
@@ -186,6 +203,7 @@ export const saveLinearContext = async (
     const data = {
         teamId: team.id,
         teamName: team.name,
+        publicLabelId: publicLabel?.id,
         toDoStateId: stateLabels.todo?.id,
         doneStateId: stateLabels.done?.id,
         canceledStateId: stateLabels.canceled?.id
