@@ -1,5 +1,6 @@
 import { CheckIcon, DotsHorizontalIcon } from "@radix-ui/react-icons";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { v4 as uuid } from "uuid";
 import {
     LinearContext,
     LinearObject,
@@ -7,17 +8,16 @@ import {
     TicketState
 } from "../typings";
 import { clearURLParams } from "../utils";
-import { v4 as uuid } from "uuid";
 import { LINEAR } from "../utils/constants";
-import DeployButton from "./DeployButton";
 import {
-    exchangeLinearToken,
-    getLinearContext,
     checkTeamWebhook,
+    exchangeLinearToken,
     getLinearAuthURL,
+    getLinearContext,
     saveLinearContext,
     setLinearWebhook
 } from "../utils/linear";
+import DeployButton from "./DeployButton";
 import Select from "./Select";
 
 interface IProps {
@@ -134,6 +134,9 @@ const LinearAuthButton = ({
 
         setTicketStates({
             todo: states.find(s => s.name === LINEAR.TICKET_STATES.todo),
+            inProgress: states.find(
+                s => s.name === LINEAR.TICKET_STATES.inProgress
+            ),
             done: states.find(s => s.name === LINEAR.TICKET_STATES.done),
             canceled: states.find(s => s.name === LINEAR.TICKET_STATES.canceled)
         });

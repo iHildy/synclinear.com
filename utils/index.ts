@@ -34,9 +34,17 @@ export const encrypt = (text: string): { hash: string; initVector: string } => {
     const algorithm = "aes-256-ctr";
     const secret = process.env.ENCRYPTION_KEY;
 
+    if (!secret) {
+        throw new Error("ENCRYPTION_KEY environment variable is required");
+    }
+
     const initVector = randomBytes(16);
-    const cipher = createCipheriv(algorithm, secret, initVector);
-    const encrypted = Buffer.concat([cipher.update(text), cipher.final()]);
+    // Type assertion needed due to Node.js Buffer/TypeScript compatibility
+    const cipher = createCipheriv(algorithm, secret as any, initVector as any);
+    const encrypted = Buffer.concat([
+        cipher.update(text, "utf8") as any,
+        cipher.final() as any
+    ]);
 
     return {
         hash: encrypted.toString("hex"),
@@ -48,14 +56,19 @@ export const decrypt = (content: string, initVector: string): string => {
     const algorithm = "aes-256-ctr";
     const secret = process.env.ENCRYPTION_KEY;
 
+    if (!secret) {
+        throw new Error("ENCRYPTION_KEY environment variable is required");
+    }
+
+    // Type assertion needed due to Node.js Buffer/TypeScript compatibility
     const decipher = createDecipheriv(
         algorithm,
-        secret,
-        Buffer.from(initVector, "hex")
+        secret as any,
+        Buffer.from(initVector, "hex") as any
     );
     const decrypted = Buffer.concat([
-        decipher.update(Buffer.from(content, "hex")),
-        decipher.final()
+        decipher.update(Buffer.from(content, "hex") as any) as any,
+        decipher.final() as any
     ]);
 
     return decrypted.toString();
@@ -91,10 +104,10 @@ export const replaceGithubComment = (text: string): string => {
 };
 
 export const getSyncFooter = (): string => {
-    return `From [SyncLinear.com](https://synclinear.com)`;
+    return `Synced`;
 };
 
-export const legacySyncFooter = `From [Linear-GitHub Sync](https://synclinear.com)`;
+export const legacySyncFooter = `Synced`;
 
 export const saveSync = async (
     linearContext: LinearContext,

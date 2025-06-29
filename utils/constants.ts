@@ -26,6 +26,7 @@ export const LINEAR = {
     WEBHOOK_EVENTS: ["Issue", "Comment", "IssueLabel"],
     TICKET_STATES: {
         todo: "Todo",
+        inProgress: "In Progress",
         done: "Done",
         canceled: "Canceled"
     },
@@ -128,5 +129,4 @@ export const GENERAL = {
         }
     ]
 };
-
 

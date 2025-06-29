@@ -34,9 +34,10 @@ model LinearTeam {
 
   publicLabelId String
 
-  canceledStateId String
-  doneStateId     String
-  toDoStateId     String
+  canceledStateId   String
+  doneStateId       String
+  toDoStateId       String
+  inProgressStateId String?
 
   Sync Sync[]
 

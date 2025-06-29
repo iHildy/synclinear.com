@@ -1,10 +1,10 @@
 import { LinearClient } from "@linear/sdk";
-import { getWebhookURL, getSyncFooter } from ".";
-import { linearQuery } from "./apollo";
-import { LINEAR, GENERAL, GITHUB } from "./constants";
-import { v4 as uuid } from "uuid";
-import { LinearObject, LinearTeam, TicketState } from "../typings";
 import { WebhookUpdateInput } from "@linear/sdk/dist/_generated_documents";
+import { v4 as uuid } from "uuid";
+import { getSyncFooter, getWebhookURL } from ".";
+import { LinearObject, LinearTeam, TicketState } from "../typings";
+import { linearQuery } from "./apollo";
+import { GENERAL, GITHUB, LINEAR } from "./constants";
 
 export const getLinearTokenURL = (): string => {
     const baseURL = LINEAR.NEW_TOKEN_URL;
@@ -205,6 +205,7 @@ export const saveLinearContext = async (
         teamName: team.name,
         publicLabelId: publicLabel?.id,
         toDoStateId: stateLabels.todo?.id,
+        inProgressStateId: stateLabels.inProgress?.id,
         doneStateId: stateLabels.done?.id,
         canceledStateId: stateLabels.canceled?.id
     };

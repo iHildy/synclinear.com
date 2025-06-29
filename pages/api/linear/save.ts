@@ -19,7 +19,8 @@ export default async function handle(
         publicLabelId,
         canceledStateId,
         doneStateId,
-        toDoStateId
+        toDoStateId,
+        inProgressStateId
     } = JSON.parse(req.body);
 
     if (!teamId) {
@@ -48,7 +49,8 @@ export default async function handle(
                 publicLabelId,
                 canceledStateId,
                 doneStateId,
-                toDoStateId
+                toDoStateId,
+                inProgressStateId
             },
             create: {
                 teamId,
@@ -56,7 +58,8 @@ export default async function handle(
                 publicLabelId,
                 canceledStateId,
                 doneStateId,
-                toDoStateId
+                toDoStateId,
+                inProgressStateId
             }
         });
 

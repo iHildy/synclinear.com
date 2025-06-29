@@ -101,6 +101,7 @@ export async function githubWebhookHandler(
 
     if (
         sig.length !== digest.length ||
+        // Type assertion needed due to Node.js Buffer/TypeScript compatibility
         !timingSafeEqual(digest as any, sig as any)
     ) {
         throw new ApiError(
@@ -209,32 +210,95 @@ export async function githubWebhookHandler(
         } else {
             const { comment } = body as IssueCommentCreatedEvent;
 
-            /* -------------------- Jules automation: comment from google-labs-jules -------------------- */
-            if (
-                sender?.login === "google-labs-jules" &&
-                comment.body?.startsWith(
-                    "You are currently at your concurrent task limit"
-                )
-            ) {
-                const hasHuman = issue.labels?.some(l => l.name === "Human");
-                if (!hasHuman) {
-                    await markJulesTaskForRetry({
-                        githubRepoId: BigInt(repository.id),
-                        githubIssueId: BigInt(issue.id),
-                        githubIssueNumber: BigInt(issue.number)
-                    });
+            // Debug: Log comment details
+            console.log(
+                `[DEBUG] Comment webhook - sender: ${sender?.login}, issue: #${
+                    issue.number
+                }, body preview: "${comment.body?.substring(0, 50)}..."`
+            );
 
-                    // Remove the `jules` label to signal pause
-                    try {
-                        await got.delete(
-                            `${GITHUB.REPO_ENDPOINT}/${repoName}/issues/${issue.number}/labels/jules`,
-                            { headers: defaultHeaders.headers }
-                        );
-                    } catch (e) {
-                        console.error(
-                            `Failed to remove jules label from #${issue.number}:`,
-                            e?.response?.body || e
-                        );
+            /* -------------------- Jules automation: comment from google-labs-jules -------------------- */
+            if (sender?.login?.includes("google-labs-jules")) {
+                console.log(
+                    `[DEBUG] Jules bot comment detected on issue #${
+                        issue.number
+                    }: "${comment.body.substring(0, 100)}..."`
+                );
+                const hasHuman = issue.labels?.some(l => l.name === "Human");
+
+                if (
+                    comment.body?.startsWith(
+                        "You are currently at your concurrent task limit"
+                    )
+                ) {
+                    console.log(
+                        `[DEBUG] Task limit comment detected for issue #${issue.number}, hasHuman: ${hasHuman}`
+                    );
+                    if (!hasHuman) {
+                        await markJulesTaskForRetry({
+                            githubRepoId: BigInt(repository.id),
+                            githubIssueId: BigInt(issue.id),
+                            githubIssueNumber: BigInt(issue.number)
+                        });
+
+                        try {
+                            // Remove the `jules` label and add `jules-queue` label
+                            await Promise.all([
+                                got.delete(
+                                    `${GITHUB.REPO_ENDPOINT}/${repoName}/issues/${issue.number}/labels/jules`,
+                                    { headers: defaultHeaders.headers }
+                                ),
+                                got.post(
+                                    `${GITHUB.REPO_ENDPOINT}/${repoName}/issues/${issue.number}/labels`,
+                                    {
+                                        json: { labels: ["jules-queue"] },
+                                        headers: defaultHeaders.headers
+                                    }
+                                )
+                            ]);
+                            console.log(
+                                `Marked issue #${issue.number} for Jules retry and added to queue`
+                            );
+                        } catch (e) {
+                            console.error(
+                                `Failed to update Jules labels for #${issue.number}:`,
+                                e?.response?.body || e
+                            );
+                        }
+                    }
+                } else if (
+                    comment.body?.includes(
+                        "When finished, you will see another comment and be able to review a PR."
+                    )
+                ) {
+                    console.log(
+                        `[DEBUG] Jules "When finished" comment detected for issue #${
+                            issue.number
+                        }, hasHuman: ${hasHuman}, syncedIssue: ${!!syncedIssue}, inProgressStateId: ${!!sync
+                            .LinearTeam.inProgressStateId}`
+                    );
+                    // Jules has started working on the issue, set Linear issue to "In Progress"
+                    if (
+                        !hasHuman &&
+                        syncedIssue &&
+                        sync.LinearTeam.inProgressStateId
+                    ) {
+                        try {
+                            await linear.updateIssue(
+                                syncedIssue.linearIssueId,
+                                {
+                                    stateId: sync.LinearTeam.inProgressStateId
+                                }
+                            );
+                            console.log(
+                                `Set Linear issue ${syncedIssue.linearIssueId} to In Progress for Jules task #${issue.number}`
+                            );
+                        } catch (e) {
+                            console.error(
+                                `Failed to set Linear issue to In Progress for #${issue.number}:`,
+                                e?.response?.body || e
+                            );
+                        }
                     }
                 }
             }

@@ -4,7 +4,18 @@ import { GITHUB } from "./constants";
 import { decrypt } from "./index";
 
 /**
+ * Creates an error handler for jules-queue label deletion failures
+ */
+const createJulesQueueLabelErrorHandler = (issueNumber: bigint) => () => {
+    // Ignore errors if jules-queue label doesn't exist
+    console.log(
+        `jules-queue label not found on issue #${issueNumber}, continuing...`
+    );
+};
+
+/**
  * Ensure a JulesTask exists for the specified issue. If one already exists it will be updated.
+ * Waits 1 minute then checks for Jules bot task limit comments.
  */
 export async function upsertJulesTask(params: {
     githubRepoId: bigint;
@@ -13,7 +24,7 @@ export async function upsertJulesTask(params: {
 }) {
     const { githubRepoId, githubIssueId, githubIssueNumber } = params;
 
-    await (prisma as any).julesTask.upsert({
+    await prisma.julesTask.upsert({
         where: { githubIssueId },
         update: { flaggedForRetry: false },
         create: {
@@ -23,6 +34,97 @@ export async function upsertJulesTask(params: {
             flaggedForRetry: false
         }
     });
+
+    // Sleep for 1 minute then check for Jules bot comments
+    setTimeout(async () => {
+        try {
+            console.log(
+                `[Jules] Checking for task limit comment on issue #${githubIssueNumber} after 1 minute`
+            );
+
+            // Get repo info to check for comments
+            const repo = await prisma.gitHubRepo.findUnique({
+                where: { repoId: githubRepoId }
+            });
+            if (!repo) return;
+
+            const sync = await prisma.sync.findFirst({
+                where: { githubRepoId }
+            });
+            if (!sync) return;
+
+            const githubKey =
+                process.env.GITHUB_API_KEY ||
+                decrypt(sync.githubApiKey, sync.githubApiKeyIV);
+
+            // Check for Jules bot comments
+            const commentsResponse = await got.get(
+                `https://api.github.com/repos/${repo.repoName}/issues/${githubIssueNumber}/comments`,
+                {
+                    headers: {
+                        Authorization: `token ${githubKey}`,
+                        "User-Agent": `${repo.repoName}, linear-github-sync`
+                    }
+                }
+            );
+
+            const comments = JSON.parse(commentsResponse.body);
+            const julesTaskLimitComment = comments.find(
+                (comment: any) =>
+                    comment.user?.login?.includes("google-labs-jules") &&
+                    comment.body?.startsWith(
+                        "You are currently at your concurrent task limit"
+                    )
+            );
+
+            if (julesTaskLimitComment) {
+                console.log(
+                    `[Jules] Task limit detected for issue #${githubIssueNumber}, marking for retry`
+                );
+
+                // Mark for retry
+                await markJulesTaskForRetry({
+                    githubRepoId,
+                    githubIssueId,
+                    githubIssueNumber
+                });
+
+                // Update GitHub labels
+                await Promise.all([
+                    got
+                        .delete(
+                            `https://api.github.com/repos/${repo.repoName}/issues/${githubIssueNumber}/labels/jules`,
+                            {
+                                headers: {
+                                    Authorization: `token ${githubKey}`,
+                                    "User-Agent": `${repo.repoName}, linear-github-sync`
+                                }
+                            }
+                        )
+                        .catch(() => {}), // Ignore if label doesn't exist
+                    got.post(
+                        `https://api.github.com/repos/${repo.repoName}/issues/${githubIssueNumber}/labels`,
+                        {
+                            json: { labels: ["jules-queue"] },
+                            headers: {
+                                Authorization: `token ${githubKey}`,
+                                "User-Agent": `${repo.repoName}, linear-github-sync`
+                            }
+                        }
+                    )
+                ]);
+
+                console.log(
+                    `[Jules] Issue #${githubIssueNumber} marked for retry and moved to queue`
+                );
+            }
+        } catch (error) {
+            console.error(
+                `[Jules] Error checking comments for issue #${githubIssueNumber}:`,
+                error
+            );
+        }
+    }, 60000); // 1 minute delay
 }
 
 /**
@@ -35,17 +137,17 @@ export async function markJulesTaskForRetry(params: {
 }) {
     const { githubRepoId, githubIssueId, githubIssueNumber } = params;
 
-    const existing = await (prisma as any).julesTask.findUnique({
+    const existing = await prisma.julesTask.findUnique({
         where: { githubIssueId }
     });
 
     if (existing) {
-        await (prisma as any).julesTask.update({
+        await prisma.julesTask.update({
             where: { githubIssueId },
             data: { flaggedForRetry: true }
         });
     } else {
-        await (prisma as any).julesTask.create({
+        await prisma.julesTask.create({
             data: {
                 githubRepoId,
                 githubIssueId,
@@ -61,7 +163,7 @@ export async function markJulesTaskForRetry(params: {
  * This will re-apply the `jules` label on GitHub and increment the retry counter.
  */
 export async function retryFlaggedJulesTasks() {
-    const flaggedTasks = await (prisma as any).julesTask.findMany({
+    const flaggedTasks = await prisma.julesTask.findMany({
         where: { flaggedForRetry: true }
     });
 
@@ -110,21 +212,39 @@ export async function retryFlaggedJulesTasks() {
                 continue;
             }
 
-            // Re-apply `jules` label
-            await got.post(
-                `${GITHUB.REPO_ENDPOINT}/${repo.repoName}/issues/${task.githubIssueNumber}/labels`,
-                {
-                    json: { labels: ["jules"] },
-                    headers: {
-                        Authorization: `token ${githubKey}`,
-                        "User-Agent": `${repo.repoName}, linear-github-sync`
-                    },
-                    throwHttpErrors: false
-                }
-            );
+            // Re-apply `jules` label and remove `jules-queue` label
+            await Promise.all([
+                got.post(
+                    `${GITHUB.REPO_ENDPOINT}/${repo.repoName}/issues/${task.githubIssueNumber}/labels`,
+                    {
+                        json: { labels: ["jules"] },
+                        headers: {
+                            Authorization: `token ${githubKey}`,
+                            "User-Agent": `${repo.repoName}, linear-github-sync`
+                        },
+                        throwHttpErrors: false
+                    }
+                ),
+                got
+                    .delete(
+                        `${GITHUB.REPO_ENDPOINT}/${repo.repoName}/issues/${task.githubIssueNumber}/labels/jules-queue`,
+                        {
+                            headers: {
+                                Authorization: `token ${githubKey}`,
+                                "User-Agent": `${repo.repoName}, linear-github-sync`
+                            },
+                            throwHttpErrors: false
+                        }
+                    )
+                    .catch(
+                        createJulesQueueLabelErrorHandler(
+                            task.githubIssueNumber
+                        )
+                    )
+            ]);
 
             // Update task state
-            await (prisma as any).julesTask.update({
+            await prisma.julesTask.update({
                 where: { id: task.id },
                 data: {
                     flaggedForRetry: false,
